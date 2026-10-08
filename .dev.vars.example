@@ -9,5 +9,7 @@ TELEGRAM_WEBHOOK_SECRET=test-webhook-secret-0123456789abcdef
 ADMIN_USER_ID=100200300
 CHANNEL_ID=-1001234567890
 PRICE_API_KEY=
+# stub (پیشفرض) | jahankhahan (نیازمند PRICE_API_BASE_URL)
 PRICE_PROVIDER=stub
+# برای jahankhahan: https://nerkh.jahankhahan.shop/data/live.json
 PRICE_API_BASE_URL=

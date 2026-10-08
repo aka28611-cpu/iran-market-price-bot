@@ -157,6 +157,21 @@ export function gregorianToJalali(
   return { jy, jm: 7 + div(k, 30), jd: mod(k, 30) + 1 };
 }
 
+/** شماره روز (JDN) از تاریخ جلالی — الگوریتم jalaali */
+function j2d(jy: number, jm: number, jd: number): number {
+  const r = jalCal(jy);
+  return g2d(r.gy, 3, r.march) + (jm - 1) * 31 - div(jm, 7) * (jm - 7) + jd - 1;
+}
+
+/** تبدیل تاریخ جلالی به میلادی (وارونه‌ی gregorianToJalali) */
+export function jalaliToGregorian(
+  jy: number,
+  jm: number,
+  jd: number,
+): { gy: number; gm: number; gd: number } {
+  return d2g(j2d(jy, jm, jd));
+}
+
 // ---------- نمایش فارسی ----------
 
 /** «۱۴۰۴/۰۷/۱۶ - ۱۳:۳۰» به وقت تهران؛ داده نامعتبر → «—» */
