@@ -1,0 +1,13 @@
+# ──────────────────────────────────────────────────────────────────────
+# قالب اجرای محلی wrangler — این فایل را به «.dev.vars» کپی کنید و
+# مقادیر «تستی» بگذارید. خود .dev.vars در .gitignore است و هرگز
+# commit نمی‌شود. مقادیر زیر فقط placeholder هستند.
+# ──────────────────────────────────────────────────────────────────────
+
+TELEGRAM_BOT_TOKEN=123456:TEST-TOKEN-PLACEHOLDER-0123456789
+TELEGRAM_WEBHOOK_SECRET=test-webhook-secret-0123456789abcdef
+ADMIN_USER_ID=100200300
+CHANNEL_ID=-1001234567890
+PRICE_API_KEY=
+PRICE_PROVIDER=stub
+PRICE_API_BASE_URL=

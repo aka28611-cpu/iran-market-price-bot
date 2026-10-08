@@ -1,0 +1,28 @@
+# ──────────────────────────────────────────────────────────────────────
+# iran-market-price-bot — تنظیمات Cloudflare Worker
+#
+# کارهای پیش از deploy واقعی:
+#   1) `wrangler kv namespace create STATE` → مقدار id را جایگزین
+#      REPLACE_WITH_KV_NAMESPACE_ID کنید
+#   2) Secretها فقط با `wrangler secret put NAME` (هرگز در این فایل):
+#      TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, ADMIN_USER_ID,
+#      CHANNEL_ID, PRICE_API_KEY (در صورت نیاز provider)
+# ──────────────────────────────────────────────────────────────────────
+
+name = "iran-market-price-bot"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+
+# Cron Triggers:
+#   "* * * * *"   → هر ۱ دقیقه: بروزرسانی پیام ثابت دلار فردایی (editMessageText)
+#   "0 */6 * * *" → هر ۶ ساعت: گزارش کامل بازار (sendMessage)
+[triggers]
+crons = ["* * * * *", "0 */6 * * *"]
+
+# KV برای وضعیت ربات (message_id پیام ثابت، فلگ pause، آخرین قیمت‌ها، وضعیت اجرا)
+[[kv_namespaces]]
+binding = "STATE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[observability]
+enabled = true

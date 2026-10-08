@@ -1,0 +1,28 @@
+# ─── iran-market-price-bot — .gitignore (امن از ابتدا) ───
+# هیچ Secret، env یا credential نباید وارد Git شود.
+
+# وابستگی‌ها
+node_modules/
+
+# Cloudflare / Wrangler
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# فایل‌های محیطی و Secret (هرگز commit نشوند)
+.env
+.env.*
+!.env.example
+
+# خروجی build و تست
+dist/
+coverage/
+
+# لاگ‌ها
+*.log
+
+# سیستم‌عامل و IDE
+.DS_Store
+.idea/
+.vscode/
