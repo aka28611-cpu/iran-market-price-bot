@@ -1,6 +1,10 @@
 import type { Env } from "../env";
 import { isAllowedPublishTarget } from "../auth/allowlist";
 import { logInfo, logWarn } from "../logging";
+import {
+  DEFAULT_MARKET_HOURS,
+  evaluateMarketSession,
+} from "../market-hours";
 import { getProvider } from "../providers/registry";
 import { TelegramClient } from "../telegram/client";
 import { formatMarketReport } from "../telegram/format";
@@ -21,6 +25,7 @@ import type { JobDeps, JobResult, JobStatus } from "./usd-job";
  *  • نبود داده = عدم انتشار
  *  • آیتم نامعتبر = حذف از گزارش (نه جایگزین)
  *  • هیچ آیتم معتبر نبود = عدم انتشار
+ *  • ساعت بازار UNKNOWN = عدم انتشار کامل (قیمت مشکوک ممنوع)
  */
 export async function runMarketReport(
   env: Env,
@@ -43,6 +48,21 @@ export async function runMarketReport(
     if (await isPaused(env.STATE)) {
       const result = await record("paused");
       logInfo("job.report", { status: result.status });
+      return result;
+    }
+
+    // ساعت بازار — منبع یگانه: src/market-hours.ts
+    // UNKNOWN → عدم انتشار (fail-closed)؛ OPEN/CLOSED → ادامه:
+    // اعتبارسنجی آیتمها داده خراب را حذف می‌کند و زمان داده در گزارش هست
+    const marketHours = deps.marketHours ?? DEFAULT_MARKET_HOURS;
+    const market = evaluateMarketSession(
+      now(),
+      marketHours.defaultSession,
+      marketHours,
+    );
+    if (market.state === "UNKNOWN") {
+      const result = await record("market-unknown", "MARKET_HOURS_UNKNOWN");
+      logWarn("job.report", { status: result.status });
       return result;
     }
 

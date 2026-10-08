@@ -3,6 +3,8 @@ import { runMarketReport } from "../src/scheduler/report-job";
 import { PAUSED_FLAG_KEY, REPORT_STATUS_KEY } from "../src/state";
 import type { MarketReport } from "../src/types";
 import {
+  alwaysOpenMarketHours,
+  alwaysUnknownMarketHours,
   CHANNEL_ID,
   fakeProvider,
   makeEnv,
@@ -27,7 +29,11 @@ const REPORT: MarketReport = {
 describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => {
   it("نبود داده (stub) → هیچ تماسی با تلگرام", async () => {
     const { calls, fetchFn } = telegramRecorder();
-    const result = await runMarketReport(makeEnv(), { fetchFn, now: NOW });
+    const result = await runMarketReport(makeEnv(), {
+      fetchFn,
+      now: NOW,
+      marketHours: alwaysOpenMarketHours(),
+    });
     expect(result.status).toBe("no-data");
     expect(calls).toHaveLength(0);
   });
@@ -40,6 +46,7 @@ describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => 
     const result = await runMarketReport(env, {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(null, REPORT),
     });
     expect(result.status).toBe("paused");
@@ -53,6 +60,7 @@ describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => 
     const result = await runMarketReport(env, {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(null, REPORT),
     });
     expect(result.status).toBe("ok");
@@ -77,6 +85,7 @@ describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => 
     const result = await runMarketReport(makeEnv(), {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(null, empty),
     });
     expect(result.status).toBe("invalid");
@@ -92,8 +101,28 @@ describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => 
     const result = await runMarketReport(makeEnv(), {
       fetchFn: failingFetch,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(null, REPORT),
     });
     expect(result.status).toBe("send-error");
+  });
+});
+
+describe("runMarketReport — ساعت بازار (UNKNOWN)", () => {
+  it("UNKNOWN → عدم انتشار کامل (fail-closed)", async () => {
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    const { calls, fetchFn } = telegramRecorder();
+    const result = await runMarketReport(env, {
+      fetchFn,
+      now: NOW,
+      provider: fakeProvider(null, REPORT),
+      marketHours: alwaysUnknownMarketHours(),
+    });
+    expect(result.status).toBe("market-unknown");
+    expect(result.reason).toBe("MARKET_HOURS_UNKNOWN");
+    expect(calls).toHaveLength(0);
+    const status = JSON.parse(kv.store.get(REPORT_STATUS_KEY) ?? "{}");
+    expect(status.status).toBe("market-unknown");
   });
 });

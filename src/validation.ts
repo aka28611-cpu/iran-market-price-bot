@@ -28,9 +28,15 @@ function isPositiveFinite(n: unknown): n is number {
   );
 }
 
-export function validateUsdPrice(
+/**
+ * اعتبارسنجی ساختاری قیمت (بدون چک تازگی).
+ *
+ * کاربرد: نمایش «آخرین قیمت معتبر» کش‌شده هنگام بسته بودن بازار —
+ * در بازار بسته داده کهنه طبیعی است؛ زمانِ خودِ داده در پیام نمایش
+ * داده می‌شود (صادقانه، بدون ساخت مقدار جدید).
+ */
+export function validateUsdPriceShape(
   price: UsdTehranPrice,
-  nowMs = Date.now(),
 ): ValidationResult {
   if (!isPositiveFinite(price.buy)) return { ok: false, reason: "INVALID_BUY" };
   if (!isPositiveFinite(price.sell))
@@ -40,14 +46,29 @@ export function validateUsdPrice(
   // در بازار فردایی تهران خرید همیشه ≤ فروش است؛ تخطی یعنی داده خراب
   if (price.buy > price.sell) return { ok: false, reason: "BUY_GT_SELL" };
 
-  const ts = Date.parse(price.updatedAt);
-  if (Number.isNaN(ts)) return { ok: false, reason: "INVALID_TIMESTAMP" };
-  const age = nowMs - ts;
-  if (age > MAX_PRICE_AGE_MS) return { ok: false, reason: "STALE_DATA" };
-  if (age < -FUTURE_TOLERANCE_MS) return { ok: false, reason: "FUTURE_DATA" };
+  if (Number.isNaN(Date.parse(price.updatedAt)))
+    return { ok: false, reason: "INVALID_TIMESTAMP" };
 
   if (!price.source || price.source.length > 100)
     return { ok: false, reason: "INVALID_SOURCE" };
+
+  return { ok: true };
+}
+
+/**
+ * اعتبارسنجی کامل قیمت برای انتشار زنده — ساختار + تازگی.
+ */
+export function validateUsdPrice(
+  price: UsdTehranPrice,
+  nowMs = Date.now(),
+): ValidationResult {
+  const shape = validateUsdPriceShape(price);
+  if (!shape.ok) return shape;
+
+  const ts = Date.parse(price.updatedAt);
+  const age = nowMs - ts;
+  if (age > MAX_PRICE_AGE_MS) return { ok: false, reason: "STALE_DATA" };
+  if (age < -FUTURE_TOLERANCE_MS) return { ok: false, reason: "FUTURE_DATA" };
 
   return { ok: true };
 }

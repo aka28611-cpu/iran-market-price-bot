@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { runUsdRefresh } from "../src/scheduler/usd-job";
+import type { PriceProvider } from "../src/providers/provider";
+import {
+  describeJobResult,
+  runUsdRefresh,
+} from "../src/scheduler/usd-job";
 import {
   LAST_USD_PRICE_KEY,
   PAUSED_FLAG_KEY,
@@ -7,6 +11,9 @@ import {
   USD_STATUS_KEY,
 } from "../src/state";
 import {
+  alwaysClosedMarketHours,
+  alwaysOpenMarketHours,
+  alwaysUnknownMarketHours,
   CHANNEL_ID,
   fakeProvider,
   fakeUsdPrice,
@@ -21,7 +28,11 @@ const FRESH = "2025-10-08T09:59:30Z";
 describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیام ثابت)", () => {
   it("نبود داده (stub) → هیچ تماسی با تلگرام", async () => {
     const { calls, fetchFn } = telegramRecorder();
-    const result = await runUsdRefresh(makeEnv(), { fetchFn, now: NOW });
+    const result = await runUsdRefresh(makeEnv(), {
+      fetchFn,
+      now: NOW,
+      marketHours: alwaysOpenMarketHours(),
+    });
     expect(result.status).toBe("no-data");
     expect(calls).toHaveLength(0);
   });
@@ -32,6 +43,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(makeEnv(), {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(stale),
     });
     expect(result.status).toBe("invalid");
@@ -45,6 +57,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(makeEnv(), {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(badPrice),
     });
     expect(result.status).toBe("invalid");
@@ -60,6 +73,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(env, {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
     });
     expect(result.status).toBe("paused");
@@ -73,6 +87,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(env, {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
     });
     expect(result.status).toBe("ok");
@@ -95,6 +110,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(env, {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
     });
     expect(result.status).toBe("ok");
@@ -112,6 +128,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(env, {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
     });
     expect(result.status).toBe("ok");
@@ -127,6 +144,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(makeEnv(), {
       fetchFn: failingFetch,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
     });
     expect(result.status).toBe("send-error");
@@ -140,6 +158,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(makeEnv(), {
       fetchFn: throwingFetch,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
     });
     expect(result.status).toBe("send-error");
@@ -160,9 +179,121 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     const result = await runUsdRefresh(makeEnv(), {
       fetchFn,
       now: NOW,
+      marketHours: alwaysOpenMarketHours(),
       provider,
     });
     expect(result.status).toBe("provider-error");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("runUsdRefresh — ساعت بازار (OPEN / CLOSED / UNKNOWN)", () => {
+  it("UNKNOWN → provider صدا زده نمی‌شود و هیچ تماسی با تلگرام نیست", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    let providerCalled = false;
+    const provider: PriceProvider = {
+      name: "spy",
+      async fetchUsdTehran() {
+        providerCalled = true;
+        return fakeUsdPrice({ updatedAt: FRESH });
+      },
+      async fetchMarketReport() {
+        return null;
+      },
+    };
+    const result = await runUsdRefresh(makeEnv(), {
+      fetchFn,
+      now: NOW,
+      provider,
+      marketHours: alwaysUnknownMarketHours(),
+    });
+    expect(result.status).toBe("market-unknown");
+    expect(result.reason).toBe("MARKET_HOURS_UNKNOWN");
+    expect(providerCalled).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("CLOSED + نبود کش → no-data بدون تماس (MARKET_CLOSED_NO_CACHE)", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const result = await runUsdRefresh(makeEnv(), {
+      fetchFn,
+      now: NOW,
+      provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
+      marketHours: alwaysClosedMarketHours(),
+    });
+    expect(result.status).toBe("no-data");
+    expect(result.reason).toBe("MARKET_CLOSED_NO_CACHE");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("CLOSED + کش معتبر → edit همان پیام با متن «بازار بسته» (بدون fetch جدید)", async () => {
+    const kv = new MockKV();
+    await kv.put(USD_MESSAGE_ID_KEY, "100");
+    // داده کهنه‌تر از ۱۰ دقیقه — در حالت CLOSED مجاز است (نمایش آخرین قیمت معتبر)
+    const cached = fakeUsdPrice({ updatedAt: "2025-10-08T09:00:00Z" });
+    await kv.put(LAST_USD_PRICE_KEY, JSON.stringify(cached));
+    const env = makeEnv({ STATE: kv });
+    const { calls, fetchFn } = telegramRecorder();
+    const result = await runUsdRefresh(env, {
+      fetchFn,
+      now: NOW,
+      provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
+      marketHours: alwaysClosedMarketHours(),
+    });
+    expect(result.status).toBe("market-closed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toContain("editMessageText");
+    expect(calls[0]?.body.message_id).toBe(100);
+    expect(String(calls[0]?.body.text)).toContain("بازار بسته است");
+    expect(String(calls[0]?.body.text)).toContain("۲۵۳٬۰۰۰");
+    // کش (آخرین قیمت معتبر) بازنویسی نمی‌شود
+    expect(
+      JSON.parse(kv.store.get(LAST_USD_PRICE_KEY) ?? "{}").updatedAt,
+    ).toBe("2025-10-08T09:00:00Z");
+  });
+
+  it("CLOSED + کش خراب (خرید > فروش) → invalid بدون انتشار", async () => {
+    const kv = new MockKV();
+    const cached = fakeUsdPrice({
+      buy: 999,
+      sell: 100,
+      updatedAt: "2025-10-08T09:00:00Z",
+    });
+    await kv.put(LAST_USD_PRICE_KEY, JSON.stringify(cached));
+    const env = makeEnv({ STATE: kv });
+    const { calls, fetchFn } = telegramRecorder();
+    const result = await runUsdRefresh(env, {
+      fetchFn,
+      now: NOW,
+      marketHours: alwaysClosedMarketHours(),
+    });
+    expect(result.status).toBe("invalid");
+    expect(result.reason).toBe("CLOSED_BUY_GT_SELL");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("CLOSED + نبود message_id → پیام جدید می‌سازد و id ذخیره می‌کند", async () => {
+    const kv = new MockKV();
+    const cached = fakeUsdPrice({ updatedAt: "2025-10-08T09:00:00Z" });
+    await kv.put(LAST_USD_PRICE_KEY, JSON.stringify(cached));
+    const env = makeEnv({ STATE: kv });
+    const { calls, fetchFn } = telegramRecorder();
+    const result = await runUsdRefresh(env, {
+      fetchFn,
+      now: NOW,
+      marketHours: alwaysClosedMarketHours(),
+    });
+    expect(result.status).toBe("market-closed");
+    expect(calls[0]?.url).toContain("sendMessage");
+    expect(kv.store.get(USD_MESSAGE_ID_KEY)).toBe("100");
+  });
+
+  it("describeJobResult پیامهای حالتهای بازار را دارد", () => {
+    expect(describeJobResult({ status: "market-closed" })).toContain(
+      "بازار بسته است",
+    );
+    expect(describeJobResult({ status: "market-unknown" })).toContain(
+      "نامشخص",
+    );
   });
 });

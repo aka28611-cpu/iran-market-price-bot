@@ -26,6 +26,23 @@ export function formatUsdMessage(price: UsdTehranPrice): string {
   ].join("\n");
 }
 
+/**
+ * پیام ثابت دلار در حالت «بازار بسته» — همان داده «آخرین قیمت معتبر»
+ * (بدون مقدار جدید/ساختگی) با نشان بسته بودن بازار.
+ */
+export function formatUsdMessageClosed(price: UsdTehranPrice): string {
+  return [
+    "💵 دلار فردایی تهران",
+    "────────────────",
+    `خرید: ${faMoney(price.buy)}`,
+    `فروش: ${faMoney(price.sell)}`,
+    `معامله: ${faMoney(price.trade)}`,
+    "────────────────",
+    "🌙 بازار بسته است — نمایش آخرین قیمت معتبر",
+    `🕐 بروزرسانی: ${faTimestamp(price.updatedAt)}`,
+  ].join("\n");
+}
+
 interface ReportMeta {
   group: ReportGroup;
   title: string;

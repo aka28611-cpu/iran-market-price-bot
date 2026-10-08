@@ -3,7 +3,7 @@
 ربات تلگرام مستقل برای دریافت قیمت‌های بازار ایران و انتشار خودکار در یک کانال تلگرام،
 بر پایه **Cloudflare Worker + Cron Triggers + Telegram Bot API** (زبان: TypeScript).
 
-> **وضعیت فعلی — مرحله ۱ (Bootstrap):**
+> **وضعیت فعلی — مرحله ۲ (Push + Deploy):** Worker روی Cloudflare مستقر است (Cron هر ۱ دقیقه و هر ۶ ساعت + KV STATE)؛ تا تنظیم Secretها همه جابها به‌صورت fail-closed رد می‌شوند (بدون هیچ تماس خارجی) و هیچ وب‌هوکی ثبت نشده است.
 > ساختار کامل پروژه، جابهای زمان‌بندی، فرمتر پیام، دستورات ادمین و مجموعه تستها آماده است؛
 > اما **provider قیمت هنوز متصل نشده** (`PRICE_PROVIDER=stub` عمداً هیچ داده‌ای تولید نمی‌کند)
 > و **هیچ Secret واقعی تنظیم نشده است**. طبق سیاست پروژه: هیچ API واقعی بدون مشخص‌شدن
@@ -29,6 +29,22 @@ Cron Trigger «0 */6 * * *»  هر ۶ ساعت
         → گزارش کامل بازار: ارز / طلا / سکه (فقط موارد موجود در provider)
         → sendMessage جدید به کانال
 ```
+
+## ساعت بازار (Market Hours)
+
+ماژول `src/market-hours.ts` — **منبع یگانه** ساعت‌های بازار؛ هیچ فایل دیگری ساعت بازار را hard-code نمی‌کند:
+
+| وضعیت | رفتار |
+|---|---|
+| `OPEN` | روال عادی: دریافت از provider ← اعتبارسنجی کامل (شامل تازگی) ← انتشار |
+| `CLOSED` | provider صدا زده نمی‌شود؛ پیام ثابت با «آخرین قیمت معتبر» ذخیره‌شده در KV + نشان «بازار بسته است» |
+| `UNKNOWN` | **fail-closed** — هیچ چیزی منتشر نمی‌شود (قیمت مشکوک ممنوع؛ بدون fetch و بدون ارسال) |
+
+- Timezone: `Asia/Tehran` (بدون DST — هماهنگ با `src/datetime.ts`)
+- تعطیلی هفتگی: روزهای بدون پنجره (پیش‌فرض: جمعه)
+- تعطیلات رسمی: لیست `holidays` در همان فایل، به تاریخ «YYYY-MM-DD» تهران — قابل توسعه
+- توسعه‌پذیری: ساختار `sessions` برای instrument/providerهای مختلف (هر session پنجره‌های خودش را دارد)
+- پیش‌فرض فعلی: شنبه تا چهارشنبه ۰۹:۰۰–۱۹:۰۰ | پنجشنبه نیم‌روز ۰۹:۰۰–۱۳:۰۰ | جمعه تعطیل
 
 ## قابلیت‌ها
 
@@ -66,6 +82,7 @@ Cron Trigger «0 */6 * * *»  هر ۶ ساعت
 │   ├── ratelimit.ts           rate limit درون-حافظه‌ای
 │   ├── validation.ts          اعتبارسنجی قیمت (بدون fallback)
 │   ├── datetime.ts            تاریخ شمسی + ساعت تهران + ارقام فارسی
+│   ├── market-hours.ts        ساعت بازار (OPEN/CLOSED/UNKNOWN) — منبع یگانه
 │   ├── state.ts               وضعیت ربات در KV
 │   ├── auth/                  authentication و authorization
 │   ├── providers/             PriceProvider interface + stub + registry
@@ -91,6 +108,7 @@ Cron Trigger «0 */6 * * *»  هر ۶ ساعت
 | عدم hard-code credential | هیچ credential در کد وجود ندارد |
 | عدم endpoint مدیریتی عمومی | سطح HTTP فقط /healthz و /telegram/webhook |
 | عدم انتشار قیمت نامعتبر | قیمت کهنه/خراب → skip کامل انتشار |
+| عدم انتشار در UNKNOWN بازار | ارزیابی ساعت بازار قبل از انتشار؛ UNKNOWN = skip کامل (بدون fetch و بدون ارسال) |
 | عدم fallback ساختگی | stub هم null برمی‌گرداند؛ هیچ عدد جعلی ارسال نمی‌شود |
 
 ## متغیرهای محیطی
@@ -143,7 +161,7 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
   -d '{"url":"https://<WORKER_URL>/telegram/webhook","secret_token":"<WEBHOOK_SECRET>"}'
 ```
 
-> دستور `deploy` عمداً تا پایان مرحله بعد اجرا نمی‌شود و `<PLACEHOLDER>`ها
+> در مرحله ۲، `npx wrangler deploy` اجرا شده است؛ `<PLACEHOLDER>`ها
 > فقط الگو هستند — مقدار واقعی در هیچ فایلی ذخیره نمی‌شود.
 
 ## تستها
@@ -154,7 +172,7 @@ npm run test:watch
 npm run typecheck # tsc --noEmit
 ```
 
-پوشش فعلی: اعتبارسنجی env، اعتبارسنجی قیمت، تاریخ شمسی/تهران، فرمتر پیامها،
+پوشش فعلی: اعتبارسنجی env، اعتبارسنجی قیمت، تاریخ شمسی/تهران، ساعت بازار (OPEN/CLOSED/UNKNOWN)، فرمتر پیامها،
 authentication (زمان-ثابت/ادمین/allowlist)، registry provider (fail-closed)،
 دستورات ادمین، سطح HTTP (healthz/webhook/404/429)، جاب ۱ دقیقه (edit پیام ثابت)،
 جاب ۶ ساعت و **اسکن بهداشت Secret کل مخزن**.

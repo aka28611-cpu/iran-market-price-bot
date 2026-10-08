@@ -1,4 +1,8 @@
 import { parseEnv, type Env, type KVLike } from "../src/env";
+import type {
+  MarketHoursConfig,
+  MarketWindow,
+} from "../src/market-hours";
 import type { MarketReport, UsdTehranPrice } from "../src/types";
 import type { PriceProvider } from "../src/providers/provider";
 
@@ -11,6 +15,39 @@ export const FAKE_BOT_TOKEN = "123456:TEST-TOKEN-PLACEHOLDER-0123456789";
 export const WEBHOOK_SECRET = "unit-test-webhook-secret-0123456789";
 export const ADMIN_USER_ID = 100200300;
 export const CHANNEL_ID = "-1001234567890";
+
+/** ساعت بازار همیشه باز — تست جابها بدون وابستگی به سیاست ساعت بازار */
+export function alwaysOpenMarketHours(): MarketHoursConfig {
+  const windows: Partial<Record<number, readonly MarketWindow[]>> = {};
+  for (const day of [0, 1, 2, 3, 4, 5, 6]) {
+    windows[day] = [{ from: "00:00", to: "23:59" }];
+  }
+  return {
+    timezone: "Asia/Tehran",
+    defaultSession: "test-always-open",
+    sessions: { "test-always-open": { windowsByDay: windows, holidays: [] } },
+  };
+}
+
+/** ساعت بازار همیشه بسته */
+export function alwaysClosedMarketHours(): MarketHoursConfig {
+  return {
+    timezone: "Asia/Tehran",
+    defaultSession: "test-always-closed",
+    sessions: {
+      "test-always-closed": { windowsByDay: {}, holidays: [] },
+    },
+  };
+}
+
+/** وضعیت نامشخص (session تعریف‌نشده) → fail-closed */
+export function alwaysUnknownMarketHours(): MarketHoursConfig {
+  return {
+    timezone: "Asia/Tehran",
+    defaultSession: "test-missing-session",
+    sessions: {},
+  };
+}
 
 export class MockKV implements KVLike {
   readonly store = new Map<string, string>();
