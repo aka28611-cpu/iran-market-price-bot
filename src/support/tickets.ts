@@ -15,19 +15,36 @@ import {
  *  • فضای‌نام per-user برای تاریخچه — امکان enumeration تیکت دیگران وجود ندارد
  *    (کاربر فقط تیکتهای «خودش» را از طریق فیلتر سمت سرور userId می‌بیند)
  *  • متن خام بدون parse_mode ارسال می‌شود → هیچ تزریق HTML/Markdown ممکن نیست
- *  • سقفها: ۳ تیکت باز per user، ۱۰۰ تیکت باز کل، تاریخچه ۲۰ تیکت بسته per user
+ *  • سقفها: ۳ تیکت باز per user، ۱۰۰ تیکت باز کل، ۲۰ پاسخ per تیکت،
+ *    تاریخچه ۲۰ تیکت بسته per user
  *  • id تیکت شمارنده KV است — نه شناسه کاربر و نه داده قابل جعل
+ *  • نقش پاسخ‌دهنده (user/support) فقط سمت سرور تعیین می‌شود؛
+ *    callback هیچ نقشی اعطا نمی‌کند
  */
+
+/** پاسخ در گفتگوی تیکت — فرستنده فقط سمت سرور تعیین می‌شود */
+export interface TicketReply {
+  /** نقش نویسنده پاسخ: کاربر صاحب تیکت یا پشتیبانی (ادمین) */
+  from: "user" | "support";
+  /** متن پاسخ (≤۵۱۲ کاراکتر) */
+  text: string;
+  /** ISO زمان ثبت پاسخ */
+  at: string;
+}
 
 export interface Ticket {
   /** شماره تیکت (شمارنده KV) */
   id: number;
   /** شناسه فرستنده — فقط سمت سرور از from.id */
   userId: number;
+  /** موضوع کوتاه تیکت (≤۸۰ کاراکتر) */
+  subject: string;
   /** متن تیکت (≤۵۱۲ کاراکتر) */
   text: string;
   /** ISO زمان ایجاد */
   createdAt: string;
+  /** گفتگوی تیکت (جدیدترین آخر) */
+  replies: TicketReply[];
 }
 
 export interface ClosedTicket extends Ticket {
@@ -38,6 +55,29 @@ const MAX_OPEN_TICKETS_PER_USER = 3;
 const MAX_OPEN_TICKETS_TOTAL = 100;
 const MAX_CLOSED_HISTORY_PER_USER = 20;
 const MAX_TICKET_TEXT_LENGTH = 512;
+const MAX_TICKET_SUBJECT_LENGTH = 80;
+const MAX_TICKET_REPLIES = 20;
+
+function sanitizeReplies(raw: unknown): TicketReply[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TicketReply[] = [];
+  for (const entry of raw.slice(0, MAX_TICKET_REPLIES)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (
+      (record.from !== "user" && record.from !== "support") ||
+      typeof record.text !== "string" ||
+      typeof record.at !== "string"
+    )
+      continue;
+    out.push({
+      from: record.from,
+      text: record.text.slice(0, MAX_TICKET_TEXT_LENGTH),
+      at: record.at,
+    });
+  }
+  return out;
+}
 
 function sanitizeTickets(raw: unknown): Ticket[] {
   if (!Array.isArray(raw)) return [];
@@ -54,11 +94,18 @@ function sanitizeTickets(raw: unknown): Ticket[] {
       typeof record.createdAt !== "string"
     )
       continue;
+    // مهاجرت دفاعی: تیکت بدون subject/replies (فرمت قدیمی) → مشتق/خالی
+    const subject =
+      typeof record.subject === "string" && record.subject.length > 0
+        ? record.subject.slice(0, MAX_TICKET_SUBJECT_LENGTH)
+        : `${record.text.slice(0, 40)}${record.text.length > 40 ? "…" : ""}`;
     out.push({
       id: record.id,
       userId: record.userId,
+      subject,
       text: record.text,
       createdAt: record.createdAt,
+      replies: sanitizeReplies(record.replies),
     });
   }
   return out;
@@ -83,7 +130,9 @@ async function nextTicketId(kv: KVLike): Promise<number> {
 export interface TicketResult {
   ok: boolean;
   reason?:
+    | "EMPTY_SUBJECT"
     | "EMPTY_TEXT"
+    | "SUBJECT_TOO_LONG"
     | "TEXT_TOO_LONG"
     | "USER_LIMIT_REACHED"
     | "TOTAL_LIMIT_REACHED";
@@ -94,12 +143,17 @@ export interface TicketResult {
 export async function createTicket(
   kv: KVLike,
   userId: number,
+  subject: string,
   text: string,
   now = () => new Date(),
 ): Promise<TicketResult> {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return { ok: false, reason: "EMPTY_TEXT" };
-  if (trimmed.length > MAX_TICKET_TEXT_LENGTH)
+  const trimmedSubject = subject.trim();
+  const trimmedText = text.trim();
+  if (trimmedSubject.length === 0) return { ok: false, reason: "EMPTY_SUBJECT" };
+  if (trimmedSubject.length > MAX_TICKET_SUBJECT_LENGTH)
+    return { ok: false, reason: "SUBJECT_TOO_LONG" };
+  if (trimmedText.length === 0) return { ok: false, reason: "EMPTY_TEXT" };
+  if (trimmedText.length > MAX_TICKET_TEXT_LENGTH)
     return { ok: false, reason: "TEXT_TOO_LONG" };
 
   const open = await readOpenTickets(kv);
@@ -113,8 +167,10 @@ export async function createTicket(
   const ticket: Ticket = {
     id,
     userId,
-    text: trimmed,
+    subject: trimmedSubject,
+    text: trimmedText,
     createdAt: now().toISOString(),
+    replies: [],
   };
   await writeOpenTickets(kv, [...open, ticket]);
   return { ok: true, ticket };
@@ -125,13 +181,79 @@ export async function listOpenTickets(kv: KVLike): Promise<Ticket[]> {
   return readOpenTickets(kv);
 }
 
+/** تیکت باز با id — برای نمایش جزئیات (اعمال مالکیت در لایه فرمان) */
+export async function getOpenTicket(
+  kv: KVLike,
+  ticketId: number,
+): Promise<Ticket | null> {
+  const open = await readOpenTickets(kv);
+  return open.find((t) => t.id === ticketId) ?? null;
+}
+
+export interface ReplyResult {
+  ok: boolean;
+  reason?:
+    | "NOT_FOUND"
+    | "ALREADY_CLOSED"
+    | "EMPTY_TEXT"
+    | "TEXT_TOO_LONG"
+    | "REPLY_LIMIT_REACHED"
+    | "FORBIDDEN";
+  ticket?: Ticket;
+}
+
+/**
+ * افزودن پاسخ به گفتگوی تیکت باز.
+ * نقش و مجوز نویسنده در این تابع اعمال می‌شود (سمت سرور، نه callback):
+ *  • from === "user"    → actorId باید صاحب تیکت باشد
+ *  • from === "support" → actorId باید ادمین باشد
+ */
+export async function addTicketReply(
+  kv: KVLike,
+  ticketId: number,
+  actorId: number,
+  from: "user" | "support",
+  text: string,
+  adminUserId: number,
+  now = () => new Date(),
+): Promise<ReplyResult> {
+  const open = await readOpenTickets(kv);
+  const ticket = open.find((t) => t.id === ticketId);
+  if (!ticket) return { ok: false, reason: "NOT_FOUND" };
+
+  if (from === "user" && ticket.userId !== actorId)
+    return { ok: false, reason: "FORBIDDEN", ticket };
+  if (from === "support" && actorId !== adminUserId)
+    return { ok: false, reason: "FORBIDDEN", ticket };
+
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return { ok: false, reason: "EMPTY_TEXT", ticket };
+  if (trimmed.length > MAX_TICKET_TEXT_LENGTH)
+    return { ok: false, reason: "TEXT_TOO_LONG", ticket };
+  if (ticket.replies.length >= MAX_TICKET_REPLIES)
+    return { ok: false, reason: "REPLY_LIMIT_REACHED", ticket };
+
+  const updated: Ticket = {
+    ...ticket,
+    replies: [
+      ...ticket.replies,
+      { from, text: trimmed, at: now().toISOString() },
+    ],
+  };
+  await writeOpenTickets(
+    kv,
+    open.map((t) => (t.id === ticketId ? updated : t)),
+  );
+  return { ok: true, ticket: updated };
+}
+
 export interface CloseResult {
   ok: boolean;
   reason?: "NOT_FOUND" | "ALREADY_CLOSED";
   ticket?: Ticket;
 }
 
-/** بستن تیکت — فقط ادمین؛ تیکت به تاریخچه کاربر منتقل می‌شود */
+/** بستن تیکت — اعمال مجوز در لایه فرمان (صاحب تیکت یا ادمین) */
 export async function closeTicket(
   kv: KVLike,
   ticketId: number,

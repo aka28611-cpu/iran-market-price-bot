@@ -52,6 +52,7 @@ describe("extractUpdateMessage — استخراج امن", () => {
       text: "/status",
       chatId: 100200300,
       fromId: 100200300,
+      isEdit: false,
     });
   });
 

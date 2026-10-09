@@ -288,7 +288,6 @@ describe("parseJahankhahanPayload — پاسخ نامعتبر → null (fail-clo
     ["null", null],
     ["آرایه", [SAMPLE]],
     ["بدون date/time", { rates: SAMPLE.rates }],
-    ["time خالی (یافته زنده منبع — پنجشنبه ۱۴۰۵/۰۷/۱۷)", { ...SAMPLE, time: "" }],
     ["date میلادی بهجای شمسی", { ...SAMPLE, date: "2026-10-08" }],
     ["بدون rates", { date: "1405/07/16", time: "14:41" }],
     ["rates آرایه", { ...SAMPLE, rates: [1, 2, 3] }],
@@ -485,5 +484,88 @@ describe("JahankhahanProvider — fetchMarketReport", () => {
     expect(first).not.toBeNull();
     expect(second).not.toBeNull();
     expect(calls).toHaveLength(2);
+  });
+});
+
+// ---------- رفتار واقعی منبع: time خالی (یافته زنده ۱۴۰۵/۰۷/۱۷) ----------
+
+describe('parseJahankhahanPayload — time خالی (رفتار واقعی منبع)', () => {
+  it('time خالی + date معتبر → parse موفق با کران پایین نیمه‌شب و timeExact=false', () => {
+    const result = parseJahankhahanPayload({ ...SAMPLE, time: "" });
+    expect(result).not.toBeNull();
+    expect(result?.timeExact).toBe(false);
+    // نیمه‌شب ۱۴۰۵/۰۷/۱۶ تهران = 2026-10-07T20:30:00Z
+    expect(result?.dataTimestamp).toBe("2026-10-07T20:30:00.000Z");
+    expect(result?.items.length).toBeGreaterThan(0);
+  });
+
+  it('time غایب (فیلد حذفشده) → همان رفتار date-only', () => {
+    const { time, ...withoutTime } = SAMPLE;
+    const result = parseJahankhahanPayload(withoutTime);
+    expect(result?.timeExact).toBe(false);
+    expect(result?.dataTimestamp).toBe("2026-10-07T20:30:00.000Z");
+  });
+
+  it('date هم غایب/نامعتبر → null (fail-closed)', () => {
+    expect(parseJahankhahanPayload({ ...SAMPLE, time: "", date: "" })).toBeNull();
+    expect(parseJahankhahanPayload({ ...SAMPLE, time: "", date: "2026/10/08" })).toBeNull();
+  });
+
+  it('time دقیق موجود → timeExact=true با همان مهر زمانی', () => {
+    const result = parseJahankhahanPayload(SAMPLE);
+    expect(result?.timeExact).toBe(true);
+    expect(result?.dataTimestamp).toBe("2026-10-08T11:11:00.000Z");
+  });
+});
+
+// ---------- سقف کهنگی داده (۷۲ ساعت) ----------
+
+describe('JahankhahanProvider — سقف کهنگی دادهٔ منبع', () => {
+  function makeProviderWith(payload: unknown, now: Date) {
+    const calls: RecordedCall[] = [];
+    const fetchFn = (async () => {
+      calls.push({ url: LIVE_URL });
+      return jsonResponse(payload);
+    }) as typeof fetch;
+    return { provider: new JahankhahanProvider({ baseUrl: LIVE_URL, fetchFn, now: () => now }), calls };
+  }
+
+  it('دادهٔ کهنهتر از ۷۲ ساعت → null (منبع فریز شده — fail-closed)', async () => {
+    // داده ۱۴۰۵/۰۷/۱۶ ولی «الان» ۵ روز بعد است
+    const { provider } = makeProviderWith(SAMPLE, new Date("2026-10-13T11:45:00.000Z"));
+    expect(await provider.fetchMarketReport()).toBeNull();
+  });
+
+  it('دادهٔ تازه (زیر ۷۲ ساعت، حتی یک روز قدم) → گزارش با dataDate', async () => {
+    // پنجشنبه ۱۴۰۵/۰۷/۱۷: دادهٔ پنجشنبه صبح (یک روز قدم) مجاز است
+    const { provider } = makeProviderWith(
+      { ...SAMPLE, time: "" },
+      new Date("2026-10-09T11:45:00.000Z"),
+    );
+    const report = await provider.fetchMarketReport();
+    expect(report).not.toBeNull();
+    expect(report?.dataDate).toBe("2026-10-07T20:30:00.000Z");
+    // نمایش صادقانه: fetchedAt = زمان دریافت، dataDate = تاریخ دادهٔ منبع
+    expect(report?.fetchedAt).toBe("2026-10-09T11:45:00.000Z");
+  });
+});
+
+// ---------- فیکسچر واقعی API (ذخیرهشده ۱۴۰۵/۰۷/۱۷) ----------
+
+describe('fixture واقعی live.json — parse بدون خطا', () => {
+  it('پاسخ واقعی ذخیرهشده (time="") parse میشود و usd/ounce دارد', async () => {
+    const fs = await import("node:fs");
+    const raw = JSON.parse(
+      fs.readFileSync("tests/fixtures/jahankhahan-live-2026-10-09.json", "utf-8"),
+    ) as unknown;
+    const result = parseJahankhahanPayload(raw);
+    expect(result).not.toBeNull();
+    expect(result?.timeExact).toBe(false);
+    const usd = result?.items.find((i) => i.symbol === "usd");
+    expect(usd?.value).toBeGreaterThan(0);
+    const ounce = result?.items.find((i) => i.symbol === "ounce");
+    expect(ounce?.value).toBeGreaterThan(0);
+    // همهٔ فیلدهای تأییدشدهٔ تأییدشده معتبرند
+    expect((result?.items ?? []).length).toBeGreaterThanOrEqual(11);
   });
 });

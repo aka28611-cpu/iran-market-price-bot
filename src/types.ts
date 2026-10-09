@@ -61,4 +61,10 @@ export interface MarketReport {
   fetchedAt: string;
   /** شناسه منبع داده */
   source: string;
+  /**
+   * تاریخ «خودِ داده» در منبع (ISO 8601) — اختیاری.
+   * نمایش صادقانه: اگر منبع تاریخ جدا برای داده دارد (مثلا فقط date بدون time)
+   * در گزارش لحظه رندر میشود تا قدم داده روشن باشد.
+   */
+  dataDate?: string;
 }

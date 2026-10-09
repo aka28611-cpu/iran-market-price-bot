@@ -11,8 +11,15 @@ name = "iran-market-price-bot"
 main = "src/index.ts"
 compatibility_date = "2025-09-15"
 
+# --- Vars (غیر حساس — public) ---
+# منبع قیمت واقعی: نرخ‌سنج جهان‌خواهن (GET بدون احراز هویت، JSON کوچک).
+# تغییر منبع فقط همین‌جا؛ fail-closed در registry (بدون fallback).
+[vars]
+PRICE_PROVIDER = "jahankhahan"
+PRICE_API_BASE_URL = "https://nerkh.jahankhahan.shop/data/live.json"
+
 # Cron Triggers:
-#   "* * * * *"   → هر ۱ دقیقه: بروزرسانی پیام ثابت دلار فردایی (editMessageText)
+#   "* * * * *"   → هر ۱ دقیقه: بروزرسانی پیام ثابت دلار (editMessageText)
 #   "0 */6 * * *" → هر ۶ ساعت: گزارش کامل بازار (sendMessage)
 [triggers]
 crons = ["* * * * *", "0 */6 * * *"]

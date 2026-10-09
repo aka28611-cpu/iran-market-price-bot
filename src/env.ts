@@ -7,9 +7,19 @@
  */
 
 /** حداقل رابط موردنیاز از KV binding (برای تست‌پذیری) */
+export interface KVPutOptions {
+  /** ثانیه تا انقضا (حداقل ۶۰ طبق مستندات KV) */
+  expirationTtl?: number;
+}
+
 export interface KVLike {
   get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
+  /**
+   * put با پشتیبانی اختیاری از TTL.
+   * runtime واقعی Workers KV گزینهٔ expirationTtl را می‌پذیرد؛
+   * mockهای تست ممکن است آن را نادیده بگیرند.
+   */
+  put(key: string, value: string, options?: KVPutOptions): Promise<void>;
   delete(key: string): Promise<void>;
 }
 

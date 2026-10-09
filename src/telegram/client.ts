@@ -101,16 +101,25 @@ export class TelegramClient {
     return this.call("sendMessage", payload);
   }
 
+  /**
+   * ویرایش متن پیام + کیبورد — برای ناوبری منوها بدون پیام جدید.
+   * خطای بی‌خطر «message is not modified» در call به ok نگاشت میشود.
+   */
   editMessageText(
     chatId: string | number,
     messageId: number,
     text: string,
+    options: { replyMarkup?: unknown } = {},
   ): Promise<TelegramResult> {
-    return this.call("editMessageText", {
+    const payload: Record<string, unknown> = {
       chat_id: chatId,
       message_id: messageId,
       text,
-    });
+    };
+    if (options.replyMarkup !== undefined) {
+      payload.reply_markup = JSON.stringify(options.replyMarkup);
+    }
+    return this.call("editMessageText", payload);
   }
 
   /**
@@ -124,10 +133,20 @@ export class TelegramClient {
     return this.call("getChatMember", { chat_id: chatId, user_id: userId });
   }
 
-  /** پاسخ به callback query — برای توقف نشانگر بارگذاری تلگرام */
-  answerCallbackQuery(callbackQueryId: string): Promise<TelegramResult> {
-    return this.call("answerCallbackQuery", {
+  /** پاسخ به callback query — توقف نشانگر بارگذاری تلگرام؛ متن کوتاه اختیاری (toast) */
+  answerCallbackQuery(
+    callbackQueryId: string,
+    options: { text?: string; showAlert?: boolean } = {},
+  ): Promise<TelegramResult> {
+    const payload: Record<string, unknown> = {
       callback_query_id: callbackQueryId,
-    });
+    };
+    if (options.text !== undefined) {
+      payload.text = options.text.slice(0, 190);
+    }
+    if (options.showAlert) {
+      payload.show_alert = true;
+    }
+    return this.call("answerCallbackQuery", payload);
   }
 }

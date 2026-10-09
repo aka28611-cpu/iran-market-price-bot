@@ -124,6 +124,16 @@ export function parseJahankhahanTimestamp(
   return parsed.toISOString();
 }
 
+/**
+ * تاریخ شمسی منبع («YYYY/MM/DD») → ISO نیمه‌شب همان روز به وقت تهران.
+ * فقط وقتی استفاده میشود که منبع time دقیق نداده باشد (time خالی) —
+ * «کران پایین» تازگی داده است، نه زمان دقیق آن.
+ */
+export function parseJahankhahanDataDate(date: unknown): string | null {
+  if (typeof date !== "string") return null;
+  return parseJahankhahanTimestamp(date.trim(), "00:00");
+}
+
 // ---------- نگاشت فیلدها ----------
 
 interface FieldMapping {
@@ -195,6 +205,8 @@ export interface JahankhahanParseResult {
   missing: string[];
   /** ISO مهر زمانی داده (از date/time) */
   dataTimestamp: string;
+  /** time دقیق در منبع بود؟ (false = فقط date — کران پایین تازگی) */
+  timeExact: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -216,7 +228,13 @@ export function parseJahankhahanPayload(
   if (!root) return null;
 
   // مهر زمانی داده — بدون آن، داده قابل اتکا نیست (fail-closed کل پاسخ)
-  const dataTimestamp = parseJahankhahanTimestamp(root.date, root.time);
+  let dataTimestamp = parseJahankhahanTimestamp(root.date, root.time);
+  let timeExact = true;
+  if (!dataTimestamp) {
+    // رفتار واقعی منبع: time خالی/غایب → نیمه‌شبِ date (کران پایین، صادقانه)
+    dataTimestamp = parseJahankhahanDataDate(root.date);
+    timeExact = false;
+  }
   if (!dataTimestamp) return null;
 
   const rates = asRecord(root.rates);
@@ -265,10 +283,13 @@ export function parseJahankhahanPayload(
     });
   }
 
-  return { items, unverified, missing, dataTimestamp };
+  return { items, unverified, missing, dataTimestamp, timeExact };
 }
 
 // ---------- Provider ----------
+
+/** حداکثر عمر مجاز «تاریخ دادهٔ منبع» (۷۲ ساعت — پوشش تعطیلی هفتگی بازار) */
+const MAX_DATA_AGE_MS = 72 * 60 * 60 * 1000;
 
 export class JahankhahanProvider implements PriceProvider {
   readonly name = "jahankhahan";
@@ -380,6 +401,17 @@ export class JahankhahanProvider implements PriceProvider {
       return null;
     }
 
+    // سقف کهنگی داده — منبع فریز شده = عدم انتشار (fail-closed)
+    const dataAge = this.nowFn().getTime() - Date.parse(parsed.dataTimestamp);
+    if (dataAge > MAX_DATA_AGE_MS) {
+      logWarn("provider.jahankhahan.stale-data", {
+        provider: this.name,
+        dataAgeHours: Math.round(dataAge / 3_600_000),
+        timeExact: parsed.timeExact,
+      });
+      return null;
+    }
+
     if (parsed.unverified.some((f) => f.value !== null)) {
       logInfo("provider.jahankhahan.unverified-withheld", {
         provider: this.name,
@@ -393,6 +425,7 @@ export class JahankhahanProvider implements PriceProvider {
       items: parsed.items,
       fetchedAt: this.nowFn().toISOString(),
       source: this.name,
+      dataDate: parsed.dataTimestamp,
     };
   }
 }

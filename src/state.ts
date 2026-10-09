@@ -1,10 +1,15 @@
 import type { KVLike } from "./env";
+import { logWarn } from "./logging";
 import type { MarketReport, UsdTehranPrice } from "./types";
 
 /**
  * وضعیت ربات در Workers KV (binding STATE).
  *
  * خواندن خراب/نامعتبر → null (fail-closed) — هرگز مقدار جایگزین ساخته نمی‌شود.
+ *
+ * قابلیت مشاهده (round 15): خطاهای KV قبلاً بی‌صدا بلعیده می‌شدند؛
+ * حالا با logWarn دیده می‌شوند (بدون مقدار حساس — فقط نام خطا) تا
+ * خرابی binding در production از طریق tail قابل تشخیص باشد.
  */
 
 export const USD_MESSAGE_ID_KEY = "usd:message_id";
@@ -13,6 +18,10 @@ export const LAST_USD_PRICE_KEY = "price:usd:last";
 export const LAST_REPORT_KEY = "price:report:last";
 export const USD_STATUS_KEY = "status:usd";
 export const REPORT_STATUS_KEY = "status:report";
+/** آخرین متن پیام ثابت منتشرشده — برای پرش ویرایش بدونتغییر */
+export const PIN_TEXT_KEY = "pin:usd:text";
+/** آخرین دادهٔ تک‌نرخ دلار (منابع تک‌نرخی) — { value, dataDate? } */
+export const PIN_DATA_KEY = "price:pin:data";
 
 // --- کلیدهای جریان دسترسی/عضویت/تیکت ---
 /** فهرست JSON شناسه کاربران مجاز (آرایه عددی) */
@@ -23,6 +32,8 @@ export const TICKETS_OPEN_KEY = "tickets:open";
 export const TICKETS_COUNT_KEY = "tickets:count";
 /** پیشوند تاریخچه تیکت بسته‌شده هر کاربر: tickets:closed:<userId> */
 export const TICKETS_CLOSED_PREFIX = "tickets:closed:";
+/** پیشوند وضعیت مکالمهٔ جریان‌های متنی (موضوع/متن/پاسخ تیکت): conv:<userId> */
+export const CONVERSATION_PREFIX = "conv:";
 
 export interface RunStatus {
   /** ISO زمان اجرا */
@@ -36,9 +47,18 @@ export async function readJson<T>(kv: KVLike, key: string): Promise<T | null> {
   try {
     const raw = await kv.get(key);
     if (raw === null || raw === "") return null;
-    return JSON.parse(raw) as T;
-  } catch {
-    return null; // داده خراب → null (fail-closed)
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      logWarn("kv.read.parse-error", { key, note: "CORRUPT_VALUE" });
+      return null; // داده خراب → null (fail-closed)
+    }
+  } catch (err) {
+    logWarn("kv.read.error", {
+      key,
+      error: err instanceof Error ? err.name : "UNKNOWN",
+    });
+    return null; // fail-closed
   }
 }
 
@@ -46,11 +66,18 @@ export async function writeJson(
   kv: KVLike,
   key: string,
   value: unknown,
-): Promise<void> {
+  options?: { expirationTtl?: number },
+): Promise<boolean> {
   try {
-    await kv.put(key, JSON.stringify(value));
-  } catch {
-    // خطای KV جریان اصلی را متوقف نمی‌کند؛ وضعیت در /status قابل مشاهده است
+    await kv.put(key, JSON.stringify(value), options);
+    return true;
+  } catch (err) {
+    // جریان اصلی متوقف نمی‌شود؛ اما دیگر بی‌صدا نیست — در tail دیده می‌شود
+    logWarn("kv.write.error", {
+      key,
+      error: err instanceof Error ? err.name : "UNKNOWN",
+    });
+    return false;
   }
 }
 
@@ -100,10 +127,53 @@ export async function recordRunStatus(
   await writeJson(kv, key, status);
 }
 
+// ---------- صرفه‌جویی در سقف نوشتن KV (free plan: ۱۰۰۰ نوشتن/روز) ----------
+
+/**
+ * کش درون‌حافظه‌ای برای جلوگیری از نوشتن مکرر وضعیتِ تغییریافته.
+ * جاب هر دقیقه اجرا می‌شود؛ نوشتن وضعیت فقط وقتی انجام می‌شود که تغییر کند.
+ * (Worker stateless است — در بدترین حالت هر isolate یکبار می‌نویسد.)
+ */
+const lastRecordedStatus = new Map<string, string>();
+
+/** مثل recordRunStatus ولی فقط در تغییر وضعیت/دلیل می‌نویسد */
+export async function recordRunStatusIfChanged(
+  kv: KVLike,
+  key: string,
+  status: RunStatus,
+): Promise<boolean> {
+  const fingerprint = `${status.status}|${status.reason ?? ""}`;
+  if (lastRecordedStatus.get(key) === fingerprint) return false;
+  const wrote = await writeJson(kv, key, status);
+  if (wrote) lastRecordedStatus.set(key, fingerprint);
+  return wrote;
+}
+
 export async function readLastUsdPrice(
   kv: KVLike,
 ): Promise<UsdTehranPrice | null> {
   return readJson<UsdTehranPrice>(kv, LAST_USD_PRICE_KEY);
+}
+
+export interface PinnedUsdSingleRate {
+  value: number;
+  dataDate?: string;
+}
+
+/** آخرین دادهٔ تک‌نرخ ذخیرهشده — sanitize کامل (fail-closed) */
+export async function readPinnedUsdSingleRate(
+  kv: KVLike,
+): Promise<PinnedUsdSingleRate | null> {
+  const raw = await readJson<unknown>(kv, PIN_DATA_KEY);
+  if (typeof raw !== "object" || raw === null) return null;
+  const record = raw as Record<string, unknown>;
+  const value = record.value;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const dataDate =
+    typeof record.dataDate === "string" ? record.dataDate : undefined;
+  return { value, dataDate };
 }
 
 export async function readLastReport(

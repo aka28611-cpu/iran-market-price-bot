@@ -43,6 +43,28 @@ export function formatUsdMessageClosed(price: UsdTehranPrice): string {
   ].join("\n");
 }
 
+/**
+ * پیام ثابت «دلار بازار» برای منابع تک‌نرخی (بدون میز خرید/فروش).
+ * خرید=فروش=معامله از نرخ واحد ساخته نمیشود — فقط همان یک نرخ واقعی نمایش داده میشود.
+ */
+export function formatPinnedUsdSingleRate(
+  value: number,
+  dataDate: string | undefined,
+  closed: boolean,
+): string {
+  return [
+    "💵 دلار بازار تهران",
+    "────────────────",
+    `نرخ دلار: ${faMoney(value)} تومان`,
+    "────────────────",
+    closed ? "🌙 بازار بسته است — آخرین نرخ معتبر" : "",
+    dataDate ? `📅 دادهٔ منبع: ${faTimestamp(dataDate)}` : "",
+    "ℹ️ منبع: نرخ واحد بازار (بدون میز خرید/فروش)",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
 interface ReportMeta {
   group: ReportGroup;
   title: string;
@@ -93,6 +115,10 @@ export function formatMarketReport(report: MarketReport): string | null {
     "📊 گزارش بازار ایران",
     `🕐 ${faTimestamp(report.fetchedAt)}`,
   ];
+  // تاریخ دادهٔ منبع (در صورت وجود) — نمایش صادقانهٔ قدم داده
+  if (report.dataDate) {
+    lines.push(`📅 دادهٔ منبع: ${faTimestamp(report.dataDate)}`);
+  }
   let included = 0;
   for (const group of GROUP_ORDER) {
     const groupLines: string[] = [];

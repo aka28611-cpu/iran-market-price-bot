@@ -4,6 +4,7 @@ import { ALLOW_LIST_KEY, PAUSED_FLAG_KEY, TICKETS_OPEN_KEY } from "../src/state"
 import { handleTelegramUpdate } from "../src/telegram/commands";
 import {
   adminUpdate,
+  callbackUpdate,
   CHANNEL_ID,
   fakeProvider,
   fakeUsdPrice,
@@ -13,6 +14,17 @@ import {
   telegramRecorder,
   userUpdate,
 } from "./helpers";
+
+/** متن آخرین پیام (ارسال یا ویرایش) */
+function lastTextOf(
+  calls: Array<{ url: string; body: Record<string, unknown> }>,
+): string {
+  const msgs = [
+    ...sentMessages(calls),
+    ...calls.filter((c) => c.url.endsWith("/editMessageText")),
+  ];
+  return String(msgs[msgs.length - 1]?.body.text ?? "");
+}
 
 describe("دستورات ادمین — authorization و مقصد پیام", () => {
   beforeEach(() => {
@@ -37,29 +49,39 @@ describe("دستورات ادمین — authorization و مقصد پیام", () 
     await handleTelegramUpdate(adminUpdate("/start"), env, { fetchFn });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.body.chat_id).toBe(100200300);
-    expect(String(calls[0]?.body.text)).toContain("/status");
-    expect(String(calls[0]?.body.text)).toContain("/pause");
+    expect(String(calls[0]?.body.text)).toContain("انتخاب کنید");
+    expect(String(calls[0]?.body.text)).toContain("مدیریتی");
+    // منوی ادمین دکمه پنل مدیریت دارد
+    const markup = JSON.parse(String(calls[0]?.body.reply_markup));
+    expect(JSON.stringify(markup.inline_keyboard)).toContain("پنل مدیریت");
   });
 
-  it("/test فقط به CHANNEL_ID پیکربندی‌شده منتشر می‌کند — نه چت فرستنده", async () => {
+  it("/test فقط به CHANNEL_ID منتشر میکند — ادمین در چت خصوصی", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const env = makeEnv();
-    // چت فرستنده عمداً متفاوت از CHANNEL_ID است
-    await handleTelegramUpdate(adminUpdate("/test", 100200300, 777), env, {
+    await handleTelegramUpdate(adminUpdate("/test"), env, {
       fetchFn,
     });
-    expect(calls).toHaveLength(2);
-    // ۱) پیام انتشار آزمایشی: فقط به کانال پیکربندی‌شده
-    expect(calls[0]?.body.chat_id).toBe(CHANNEL_ID);
-    expect(String(calls[0]?.body.text)).toContain("اتصال کانال برقرار است");
-    // ۲) تأییدیه نتیجه: به چت ادمینِ احرازشده
-    expect(calls[1]?.body.chat_id).toBe(777);
-    // متن «اتصال کانال برقرار است» فقط به مقصد کانال می‌رود
-    for (const call of calls) {
+    const testMsgs = sentMessages(calls);
+    expect(testMsgs).toHaveLength(2);
+    expect(testMsgs[0]?.body.chat_id).toBe(CHANNEL_ID);
+    expect(String(testMsgs[0]?.body.text)).toContain("اتصال کانال برقرار است");
+    expect(testMsgs[1]?.body.chat_id).toBe(100200300);
+    for (const call of testMsgs) {
       if (String(call.body.text).includes("اتصال کانال برقرار است")) {
         expect(call.body.chat_id).toBe(CHANNEL_ID);
       }
     }
+  });
+
+  it("دستور ادمین در چت غیرخصوصی کاملاً بیپاسخ است (نشت به گروه ممنوع)", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const env = makeEnv();
+    await handleTelegramUpdate(adminUpdate("/test", 100200300, -100999), env, {
+      fetchFn,
+    });
+    expect(calls).toHaveLength(0);
+    expect(sentMessages(calls)).toHaveLength(0);
   });
 
   it("/pause و /resume فلگ KV را قطع/وصل می‌کنند", async () => {
@@ -259,14 +281,29 @@ describe("مدیریت دسترسی و تیکت — دستورات ادمین", 
       (m) => m.body.chat_id === 100200300,
     );
     expect(notify).toBeDefined();
-    expect(String(notify?.body.text)).toContain("تیکت جدید #1");
+    expect(String(notify?.body.text)).toContain("تیکت جدید");
+    expect(String(notify?.body.text)).toContain("فعال کنید");
+    const notifyMarkup = JSON.parse(String(notify?.body.reply_markup));
+    const notifyButtons = JSON.stringify(notifyMarkup.inline_keyboard);
+    expect(notifyButtons).toContain("adr1");
+    expect(notifyButtons).toContain("adc1");
 
     // ادمین فهرست را میبیند
     await handleTelegramUpdate(adminUpdate("/tickets"), env, { fetchFn });
     const listMsg = sentMessages(calls).find((m) =>
-      String(m.body.text).includes("تیکت‌های باز"),
+      String(m.body.text).includes("باز (۱)"),
     );
-    expect(String(listMsg?.body.text)).toContain("999111222");
+    expect(listMsg).toBeDefined();
+    const listMarkup = JSON.parse(String(listMsg?.body.reply_markup));
+    expect(JSON.stringify(listMarkup.inline_keyboard)).toContain("adv1");
+    await handleTelegramUpdate(
+      callbackUpdate("adv1", 100200300),
+      env,
+      { fetchFn },
+    );
+    const detailText = lastTextOf(calls);
+    expect(detailText).toContain("کاربر:");
+    expect(detailText).toContain("فعال کنید");
 
     // بستن + اطلاع کاربر
     await handleTelegramUpdate(adminUpdate("/ticket_close 1"), env, {

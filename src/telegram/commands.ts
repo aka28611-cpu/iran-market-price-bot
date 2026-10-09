@@ -1,9 +1,9 @@
 import type { Env } from "../env";
 import {
-  allowUser,
   checkChannelMembership,
   isUserAllowed,
   listAllowedUsers,
+  allowUser,
   revokeUser,
 } from "../auth/access";
 import { isAllowedPublishTarget } from "../auth/allowlist";
@@ -15,7 +15,7 @@ import {
   type TelegramCallbackInfo,
   type TelegramMessageInfo,
 } from "../auth/telegram-auth";
-import { faMoney, faTimestamp } from "../datetime";
+import { faTimestamp } from "../datetime";
 import { logError, logInfo, logWarn } from "../logging";
 import {
   DEFAULT_MARKET_HOURS,
@@ -38,193 +38,80 @@ import {
   createTicket,
   listOpenTickets,
   listUserTickets,
+  getOpenTicket,
 } from "../support/tickets";
 import { sanitizeReportItems, validateUsdPrice } from "../validation";
+import { decodeCallback, type CallbackAction } from "./callbacks";
 import { TelegramClient } from "./client";
 import { formatMarketReport, formatUsdMessage } from "./format";
+import {
+  cancelConversation,
+  confirmTicketCreate,
+  handleConversationText,
+  notifyAdminNewTicket,
+  renderView,
+  restartTicketCreate,
+  startAdminReplyFlow,
+  startTicketCreateFlow,
+  startUserReplyFlow,
+  type RenderTarget,
+} from "./flows";
+import {
+  adminMenuView,
+  adminTicketDetailView,
+  adminTicketListView,
+  fallbackHintView,
+  joinPromptView,
+  mainMenuView,
+  membershipUnknownView,
+  operationInvalidView,
+  pricesView,
+  restrictedView,
+  statusView,
+  ticketClosedView,
+  ticketCreatedView,
+  closeConfirmView,
+  ticketDetailView,
+  ticketListView,
+} from "./menu";
 import {
   runUsdRefresh,
   describeJobResult,
   type JobDeps,
 } from "../scheduler/usd-job";
+import { clearConversation } from "./conversation";
 
 /**
- * پردازش updateهای Telegram.
+ * پردازش updateهای Telegram — معماری بازطراحی‌شده (round 15).
  *
- * جریان جدید (کاربران غیرادمین):
- *  1) استخراج امن message / callback_query (اعتبارسنجی ساختار)
- *  2) ادمین: دستورات مدیریتی (مثل قبل) + مدیریت دسترسی + تیکتها
- *  3) پشتیبانی (مسیر فرار — برای همه کاربران، حتی غیرمجاز): /ticket، /mytickets
- *  4) دستورات محافظت‌شده کاربر (/start /price /report /status):
- *     گات ۱: عضویت کانال (سمت سرور getChatMember — سه‌حالته)
- *     گات ۲: مجوز (allowlist در KV — عضویت به‌تنهایی مجوز نیست)
+ * جریانها:
+ *  1) callback_query → منوها/جریانهای دکمهای (edit در همان پیام)
+ *  2) متن غیردستوری → مصرف توسط مکالمهٔ فعال (تیکت/پاسخ) یا راهنمای منو
+ *  3) دستورها: ادمین (مدیریتی) / پشتیبانی (مسیر فرار همه) / محافظت‌شده کاربر
  *
  * امنیت:
- *  • هر دو گات روی «هر» فراخوانی دستور/callback سمت سرور اعمال میشود
- *  • شناسه کاربر فقط از from.id خود update — هرگز از data پیام
- *  • جریانهای کاربر فقط در چت خصوصی (chat.id === from.id) — بدون نشت به گروه
- *  • پاسخ دستورات همیشه به چت فرستنده؛ انتشار فقط به CHANNEL_ID (allowlist)
+ *  • هر دو گات (عضویت + مجوز) روی هر callback/دستور محافظت‌شده سمت سرور
+ *  • مالکیت تیکت و سطح ادمین در هر عملیات دوباره بررسی میشود —
+ *    مخفی‌کردن دکمه کنترل دسترسی نیست
+ *  • شناسه کاربر فقط از from.id خود update — هرگز از data
+ *  • همهٔ تعاملات کاربر فقط در چت خصوصی (chat.id === from.id)
+ *  • پاسخ همیشه با answerCallbackQuery (توقف نشانگر بارگذاری)
  */
-
-const START_TEXT = [
-  "🤖 ربات قیمت بازار ایران",
-  "",
-  "دستورات ادمین:",
-  "/status — وضعیت ربات",
-  "/price — قیمت لحظه‌ای دلار فردایی",
-  "/update — بروزرسانی فوری پیام کانال",
-  "/pause — توقف انتشار خودکار",
-  "/resume — ادامه انتشار خودکار",
-  "/test — ارسال پیام آزمایشی به کانال",
-  "",
-  "مدیریت دسترسی کاربران:",
-  "/allow <user_id> — افزودن کاربر مجاز",
-  "/revoke <user_id> — حذف دسترسی کاربر",
-  "/users — فهرست کاربران مجاز",
-  "",
-  "پشتیبانی:",
-  "/tickets — تیکت‌های باز",
-  "/ticket_close <id> — بستن تیکت",
-  "",
-  "⚠️ دستورات مدیریتی فقط به ADMIN_USER_ID پاسخ می‌دهند.",
-].join("\n");
-
-const TEST_TEXT = "✅ پیام آزمایشی ربات قیمت بازار — اتصال کانال برقرار است.";
 
 /** سقف دستورات هر کاربر در دقیقه */
 const COMMAND_RATE_LIMIT = 20;
 /** سقف callback هر کاربر در دقیقه */
 const CALLBACK_RATE_LIMIT = 20;
 
-/** اقدامهای مجاز callback — فقط «نوع اقدام»، بدون شناسه جاسازی‌شده */
-const CALLBACK_CHECK_MEMBERSHIP = "check_membership";
-const CALLBACK_SUPPORT_START = "support_start";
-
-/** پیام عضویت وقتی دکمه لینک کانال موجود است */
-const JOIN_TEXT_WITH_LINK = [
-  "🔐 برای استفاده از امکانات این ربات، ابتدا باید عضو کانال قیمت ارز شوید.",
-  "",
-  "۱) روی دکمه «📊 عضویت در کانال قیمت ارز» بزنید و عضو شوید.",
-  "۲) سپس دکمه «✅ بررسی عضویت» را بزنید تا وضعیت شما بررسی شود.",
-  "",
-  "تا زمان تأیید عضویت، امکانات محافظت‌شده ربات در دسترس شما نیست.",
-].join("\n");
-
-/**
- * پیام عضویت وقتی لینک کانال قابل تعیین نیست (کانال خصوصی + CHANNEL_LINK خالی)
- * — دکمه «عضویت» حذف شده و متن به آن ارجاع نمیدهد (بدون بنبست؛ مسیر ادامه دارد)
- */
-const JOIN_TEXT_NO_LINK = [
-  "🔐 برای استفاده از امکانات این ربات، ابتدا باید عضو کانال قیمت ارز شوید.",
-  "",
-  "لطفاً در تلگرام عضو کانال رسمی قیمت ارز شوید؛ سپس دکمه «✅ بررسی عضویت» را بزنید تا وضعیت شما بررسی شود.",
-  "",
-  "تا زمان تأیید عضویت، امکانات محافظت‌شده ربات در دسترس شما نیست.",
-].join("\n");
-
-const MEMBERSHIP_UNKNOWN_TEXT =
-  "⚠️ در حال حاضر امکان بررسی عضویت شما وجود ندارد. لطفاً کمی بعد دوباره تلاش کنید.";
-
-const RESTRICTED_TEXT = [
-  "⚠️ دسترسی غیرمجاز",
-  "",
-  "عضویت شما در کانال تأیید شد، اما امکان استفاده مستقیم از امکانات این ربات برای حساب شما فعال نیست.",
-  "",
-  "📊 برای مشاهده قیمت‌های ارز و دریافت آخرین به‌روزرسانی‌ها، به کانال رسمی مراجعه کنید.",
-  "",
-  "🎫 برای درخواست دسترسی یا پیگیری مشکل، با پشتیبانی تماس بگیرید.",
-].join("\n");
-
-const SUPPORT_INSTRUCTIONS_TEXT = [
-  "🎫 پشتیبانی و ثبت تیکت",
-  "",
-  "برای ثبت تیکت جدید، دستور زیر را بفرستید:",
-  "/ticket <متن پیام>",
-  "",
-  "مثال:",
-  "/ticket لطفاً دسترسی ربات را برایم فعال کنید",
-  "",
-  "برای پیگیری تیکت‌های خودتان: /mytickets",
-  "",
-  "تیکت‌های شما فقط برای ادمین ربات قابل مشاهده است.",
-].join("\n");
-
-const USER_WELCOME_TEXT = [
-  "✅ خوش آمدید!",
-  "",
-  "دسترسی شما به ربات قیمت بازار ایران فعال است.",
-  "",
-  "دستورات:",
-  "/price — قیمت‌های لحظه‌ای بازار",
-  "/report — آخرین گزارش ذخیره‌شده",
-  "/status — وضعیت ساده ربات",
-  "/ticket — ثبت تیکت پشتیبانی",
-  "/mytickets — پیگیری تیکت‌های شما",
-  "",
-  "📊 قیمت‌ها همچنین به‌صورت خودکار در کانال رسمی منتشر می‌شوند.",
-].join("\n");
-
-interface InlineButton {
-  text: string;
-  url?: string;
-  callback_data?: string;
-}
+const TEST_TEXT = "✅ پیام آزمایشی ربات قیمت بازار — اتصال کانال برقرار است.";
 
 /** لینک عمومی کانال — از تنظیمات موجود؛ هرگز URL ساختگی */
 function resolveChannelLink(env: Env): string {
   if (env.CHANNEL_LINK) return env.CHANNEL_LINK;
-  // کانال عمومی با @username → لینک عمومی استاندارد
   if (env.CHANNEL_ID.startsWith("@")) {
     return `https://t.me/${env.CHANNEL_ID.slice(1)}`;
   }
-  return ""; // کانال خصوصی بدون لینک → دکمه حذف می‌شود
-}
-
-/** پیام درخواست عضویت + دکمه‌ها */
-function buildJoinKeyboard(env: Env): { inline_keyboard: InlineButton[][] } {
-  const rows: InlineButton[][] = [];
-  const link = resolveChannelLink(env);
-  if (link) {
-    rows.push([
-      { text: "📊 عضویت در کانال قیمت ارز", url: link },
-    ]);
-  }
-  rows.push([{ text: "✅ بررسی عضویت", callback_data: CALLBACK_CHECK_MEMBERSHIP }]);
-  return { inline_keyboard: rows };
-}
-
-/** پیام محدودیت دسترسی + دو دکمه (طبق متن مصوب مالک) */
-function buildRestrictedKeyboard(env: Env): {
-  inline_keyboard: InlineButton[][];
-} {
-  const rows: InlineButton[][] = [];
-  const link = resolveChannelLink(env);
-  if (link) {
-    rows.push([{ text: "📊 کانال قیمت ارز", url: link }]);
-  }
-  // پشتیبانی: لینک خارجی در صورت پیکربندی؛ وگرنه سیستم تیکت داخلی
-  if (env.SUPPORT_LINK) {
-    rows.push([{ text: "🎫 پشتیبانی و ثبت تیکت", url: env.SUPPORT_LINK }]);
-  } else {
-    rows.push([
-      { text: "🎫 پشتیبانی و ثبت تیکت", callback_data: CALLBACK_SUPPORT_START },
-    ]);
-  }
-  return { inline_keyboard: rows };
-}
-
-/** ارسال پیام درخواست عضویت — متن متناسب با وجود/نبود لینک کانال */
-async function sendJoinPrompt(
-  tg: TelegramClient,
-  env: Env,
-  chatId: number,
-): Promise<void> {
-  const text = resolveChannelLink(env)
-    ? JOIN_TEXT_WITH_LINK
-    : JOIN_TEXT_NO_LINK;
-  await tg.sendMessage(chatId, text, {
-    replyMarkup: buildJoinKeyboard(env),
-  });
+  return ""; // کانال خصوصی بدون لینک → دکمه حذف میشود
 }
 
 export async function handleTelegramUpdate(
@@ -244,15 +131,37 @@ export async function handleTelegramUpdate(
     if (!message) return;
 
     const input = parseCommandInput(message.text);
-    if (!input) return; // متن غیردستوری — بی‌پاسخ
 
-    // ۲) ادمین — دستورات مدیریتی (رفتار قبلی حفظ شده + مدیریت جدید)
+    // ۲) متن غیردستوری → مکالمهٔ فعال (جریان تیکت/پاسخ) یا راهنمای کوتاه
+    if (!input) {
+      if (message.chatId !== message.fromId) return; // گروه → بی‌پاسخ
+      const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
+        fetchFn: deps.fetchFn,
+      });
+      const consumed = await handleConversationText(tg, env, message);
+      if (consumed) return;
+      if (!rateLimit(`tg:txt:${message.fromId}`, COMMAND_RATE_LIMIT)) {
+        logWarn("tg.text.rate_limited", { userId: message.fromId });
+        return;
+      }
+      await renderView(tg, { chatId: message.chatId }, fallbackHintView());
+      return;
+    }
+
+    // دستور = خروج قابل‌پیش‌بینی از هر مکالمهٔ فعال
+    await clearActiveConversation(env, message.fromId);
+
+    // ۳) ادمین — دستورات مدیریتی (فقط چت خصوصی)
     if (isAuthorizedAdmin(message.fromId, env.ADMIN_USER_ID)) {
+      if (message.chatId !== message.fromId) {
+        logInfo("tg.command.admin-non-private", {});
+        return;
+      }
       await handleAdminCommand(message, input, env, deps);
       return;
     }
 
-    // ۳) مسیر فرار پشتیبانی — برای همه کاربران، بدون گات عضویت/مجوز
+    // ۴) مسیر فرار پشتیبانی — برای همه کاربران، بدون گات
     if (input.name === "ticket" || input.name === "mytickets") {
       if (!rateLimit(`tg:cmd:${message.fromId}`, COMMAND_RATE_LIMIT)) {
         logWarn("tg.command.rate_limited", { userId: message.fromId });
@@ -262,7 +171,7 @@ export async function handleTelegramUpdate(
       return;
     }
 
-    // ۴) دستورات محافظت‌شده کاربر — هر دو گات سمت سرور
+    // ۵) دستورات محافظت‌شده کاربر — هر دو گات سمت سرور
     switch (input.name) {
       case "start":
       case "price":
@@ -275,7 +184,6 @@ export async function handleTelegramUpdate(
         await handleProtectedUserCommand(message, input, env, deps);
         return;
       default:
-        // دستور ناشناس — بی‌پاسخ (عدم افشای فهرست دستورات)
         logInfo("tg.command.unknown", { command: input.name });
         return;
     }
@@ -286,7 +194,320 @@ export async function handleTelegramUpdate(
   }
 }
 
-// ---------- ادمین ----------
+async function clearActiveConversation(env: Env, userId: number): Promise<void> {
+  await clearConversation(env.STATE, userId);
+}
+
+// ---------- Callback دکمهها ----------
+
+async function handleCallback(
+  callback: TelegramCallbackInfo,
+  env: Env,
+  deps: JobDeps,
+): Promise<void> {
+  const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
+    fetchFn: deps.fetchFn,
+  });
+
+  // همیشه پاسخ — توقف نشانگر بارگذاری تلگرام (حتی در صورت رد)
+  await tg.answerCallbackQuery(callback.id);
+
+  // دکمههای ما فقط در چت خصوصی کاربر ارسال میشوند
+  if (callback.chatId !== callback.fromId || callback.fromId <= 0) {
+    logInfo("tg.callback.non-private", {});
+    return;
+  }
+
+  if (!rateLimit(`tg:cb:${callback.fromId}`, CALLBACK_RATE_LIMIT)) {
+    logWarn("tg.callback.rate_limited", { userId: callback.fromId });
+    return;
+  }
+
+  const action = decodeCallback(callback.data);
+  if (!action) {
+    // data جعلی/ناشناس — فقط لاگ، بدون پاسخ اضافی
+    logWarn("tg.callback.unknown-action", { data: callback.data });
+    return;
+  }
+
+  const target: RenderTarget = {
+    chatId: callback.chatId,
+    messageId: callback.messageId,
+  };
+  const isAdmin = isAuthorizedAdmin(callback.fromId, env.ADMIN_USER_ID);
+
+  // ---- عملیات ادمین: مجوز در هر بار بررسی میشود (سمت سرور) ----
+  if (isAdminAction(action)) {
+    if (!isAdmin) {
+      // کاربر معمولی روی دکمه ادمین (پیام کهنه/جعلی) — بی‌پاسخ
+      logWarn("tg.callback.admin-forbidden", { userId: callback.fromId });
+      return;
+    }
+    await handleAdminAction(action, callback, env, deps, target);
+    return;
+  }
+
+  // ---- عملیات کاربر ----
+  switch (action.kind) {
+    case "recheck":
+    case "home": {
+      if (isAdmin) {
+        await renderView(tg, target, mainMenuView(true));
+        return;
+      }
+      const allowed = await gateUser(tg, env, callback.fromId, target, deps);
+      if (allowed) await renderView(tg, target, mainMenuView(false));
+      return;
+    }
+
+    case "prices": {
+      const allowed = await gateUser(tg, env, callback.fromId, target, deps);
+      if (allowed) {
+        await renderView(tg, target, pricesView(await buildUserPriceText(env, deps)));
+      }
+      return;
+    }
+
+    case "status": {
+      const allowed = await gateUser(tg, env, callback.fromId, target, deps);
+      if (allowed) {
+        const text = isAdmin
+          ? await buildAdminStatusText(env)
+          : await buildUserStatusText(env);
+        await renderView(tg, target, statusView(text));
+      }
+      return;
+    }
+
+    // پشتیبانی: مسیر فرار — بدون گات عضویت/مجوز
+    case "tickets": {
+      const { open, closedCount } = await listUserTickets(
+        env.STATE,
+        callback.fromId,
+      );
+      await renderView(tg, target, ticketListView(open, closedCount));
+      return;
+    }
+
+    case "ticket_new": {
+      await startTicketCreateFlow(tg, env, target, callback.fromId);
+      return;
+    }
+
+    case "ticket_confirm": {
+      await confirmTicketCreate(tg, env, target, callback.fromId);
+      return;
+    }
+
+    case "ticket_restart": {
+      await restartTicketCreate(tg, env, target, callback.fromId);
+      return;
+    }
+
+    case "cancel": {
+      await cancelConversation(tg, env, target, callback.fromId);
+      return;
+    }
+
+    case "ticket_view": {
+      const ticket = await getOpenTicket(env.STATE, action.id);
+      if (!ticket || ticket.userId !== callback.fromId) {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت در دسترس شما نیست (شاید بسته شده باشد)."),
+        );
+        return;
+      }
+      await renderView(tg, target, ticketDetailView(ticket));
+      return;
+    }
+
+    case "ticket_reply": {
+      await startUserReplyFlow(tg, env, target, callback.fromId, action.id);
+      return;
+    }
+
+    case "ticket_close_confirm": {
+      const ticket = await getOpenTicket(env.STATE, action.id);
+      if (!ticket || ticket.userId !== callback.fromId) {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت در دسترس شما نیست."),
+        );
+        return;
+      }
+      await renderView(tg, target, closeConfirmView(action.id, false));
+      return;
+    }
+
+    case "ticket_close_yes": {
+      const ticket = await getOpenTicket(env.STATE, action.id);
+      if (!ticket || ticket.userId !== callback.fromId) {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت در دسترس شما نیست."),
+        );
+        return;
+      }
+      const result = await closeTicket(env.STATE, action.id);
+      if (!result.ok) {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت قبلاً بسته شده است."),
+        );
+        return;
+      }
+      await renderView(tg, target, ticketClosedView(action.id));
+      await tg.sendMessage(
+        env.ADMIN_USER_ID,
+        `ℹ️ کاربر ${callback.fromId} تیکت #${action.id} را بست.`,
+      );
+      return;
+    }
+
+    default:
+      logWarn("tg.callback.unhandled", { kind: action.kind });
+      return;
+  }
+}
+
+function isAdminAction(action: CallbackAction): boolean {
+  return action.kind.startsWith("admin_");
+}
+
+async function handleAdminAction(
+  action: CallbackAction,
+  callback: TelegramCallbackInfo,
+  env: Env,
+  deps: JobDeps,
+  target: RenderTarget,
+): Promise<void> {
+  const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
+    fetchFn: deps.fetchFn,
+  });
+  switch (action.kind) {
+    case "admin_home":
+      await renderView(tg, target, adminMenuView());
+      return;
+    case "admin_tickets": {
+      const tickets = await listOpenTickets(env.STATE);
+      await renderView(tg, target, adminTicketListView(tickets));
+      return;
+    }
+    case "admin_view": {
+      const ticket = await getOpenTicket(env.STATE, action.id);
+      if (!ticket) {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت بسته یا حذف شده است."),
+        );
+        return;
+      }
+      await renderView(tg, target, adminTicketDetailView(ticket));
+      return;
+    }
+    case "admin_reply": {
+      await startAdminReplyFlow(tg, env, target, callback.fromId, action.id);
+      return;
+    }
+    case "admin_close_confirm": {
+      const ticket = await getOpenTicket(env.STATE, action.id);
+      if (!ticket) {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت بسته یا حذف شده است."),
+        );
+        return;
+      }
+      await renderView(tg, target, closeConfirmView(action.id, true));
+      return;
+    }
+    case "admin_close_yes": {
+      const ticket = await getOpenTicket(env.STATE, action.id);
+      if (!ticket) {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت قبلاً بسته شده است."),
+        );
+        return;
+      }
+      const result = await closeTicket(env.STATE, action.id);
+      if (result.ok && result.ticket) {
+        const notified = await tg.sendMessage(
+          result.ticket.userId,
+          `✅ تیکت #${action.id} شما بسته شد.\nبرای موضوع جدید از منوی ربات «📝 ثبت تیکت» را بزنید.`,
+        );
+        await renderView(tg, target, {
+          text: notified.ok
+            ? `✅ تیکت #${action.id} بسته شد و به کاربر اطلاع داده شد.`
+            : `✅ تیکت #${action.id} بسته شد؛ اما اطلاع‌رسانی به کاربر ناموفق بود.`,
+          keyboard: adminMenuView().keyboard,
+        });
+      } else {
+        await renderView(
+          tg,
+          target,
+          operationInvalidView("این تیکت قبلاً بسته شده است."),
+        );
+      }
+      return;
+    }
+    case "admin_refresh": {
+      const result = await runUsdRefresh(env, deps);
+      await renderView(tg, target, {
+        text: `🔄 بروزرسانی کانال:\n${describeJobResult(result)}`,
+        keyboard: adminMenuView().keyboard,
+      });
+      return;
+    }
+    default:
+      logWarn("tg.callback.admin-unhandled", { kind: action.kind });
+      return;
+  }
+}
+
+/**
+ * گیت‌های کاربر (عضویت + مجوز) با رندر پیام مسدودکننده در همان target.
+ * خروجی true = مجاز (ادامه); false = مسدود (پیام مناسب رندر شد).
+ */
+async function gateUser(
+  tg: TelegramClient,
+  env: Env,
+  fromId: number,
+  target: RenderTarget,
+  deps: JobDeps,
+): Promise<boolean> {
+  const membership = await checkChannelMembership(fromId, env, deps);
+  if (membership === "unknown") {
+    await renderView(tg, target, membershipUnknownView());
+    return false;
+  }
+  if (membership === "not-member") {
+    await renderView(tg, target, joinPromptView(resolveChannelLink(env)));
+    logInfo("tg.gate.membership-required", { userId: fromId });
+    return false;
+  }
+  const allowed = await isUserAllowed(env.STATE, fromId);
+  if (!allowed) {
+    await renderView(
+      tg,
+      target,
+      restrictedView(resolveChannelLink(env), env.SUPPORT_LINK),
+    );
+    logInfo("tg.gate.denied", { userId: fromId });
+    return false;
+  }
+  return true;
+}
+
+// ---------- ادمین (دستورات متنی — سازگار با قبل) ----------
 
 async function handleAdminCommand(
   message: TelegramMessageInfo,
@@ -302,51 +523,52 @@ async function handleAdminCommand(
   const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
     fetchFn: deps.fetchFn,
   });
+  const sendView = async (text: string, keyboard?: unknown): Promise<void> => {
+    await tg.sendMessage(message.chatId, text, keyboard ? { replyMarkup: keyboard } : {});
+  };
 
   switch (input.name) {
-    case "start":
-      await tg.sendMessage(message.chatId, START_TEXT);
+    case "start": {
+      const view = mainMenuView(true);
+      await sendView(
+        `${view.text}\n\nدستورات متنی مدیریتی (pause، resume، allow، revoke، users، test، update) همچنان فعالاند.`,
+        { inline_keyboard: view.keyboard },
+      );
       return;
+    }
 
     case "status":
-      await tg.sendMessage(message.chatId, await buildStatusText(env));
+      await sendView(await buildAdminStatusText(env));
       return;
 
     case "price":
-      await tg.sendMessage(message.chatId, await buildAdminPriceText(env, deps));
+      await sendView(await buildAdminPriceText(env, deps));
       return;
 
     case "update": {
       const result = await runUsdRefresh(env, deps);
-      await tg.sendMessage(message.chatId, describeJobResult(result));
+      await sendView(describeJobResult(result));
       return;
     }
 
     case "pause":
       await setPaused(env.STATE, true);
-      await tg.sendMessage(
-        message.chatId,
-        "⏸ انتشار خودکار متوقف شد. برای ادامه /resume بفرستید.",
-      );
+      await sendView("⏸ انتشار خودکار متوقف شد. برای ادامه /resume بفرستید.");
       return;
 
     case "resume":
       await setPaused(env.STATE, false);
-      await tg.sendMessage(message.chatId, "▶️ انتشار خودکار ادامه یافت.");
+      await sendView("▶️ انتشار خودکار ادامه یافت.");
       return;
 
     case "test": {
       const target = env.CHANNEL_ID;
       if (!isAllowedPublishTarget(env.CHANNEL_ID, target)) {
-        await tg.sendMessage(
-          message.chatId,
-          "❌ مقصد مجاز انتشار پیکربندی نشده است.",
-        );
+        await sendView("❌ مقصد مجاز انتشار پیکربندی نشده است.");
         return;
       }
       const sent = await tg.sendMessage(target, TEST_TEXT);
-      await tg.sendMessage(
-        message.chatId,
+      await sendView(
         sent.ok
           ? "✅ پیام آزمایشی به کانال ارسال شد."
           : `❌ ارسال به کانال ناموفق بود (${sent.error ?? "UNKNOWN"}).`,
@@ -368,23 +590,14 @@ async function handleAdminCommand(
         users.length === 0
           ? "ℹ️ هنوز کاربر مجازی ثبت نشده است."
           : `👥 کاربران مجاز (${users.length}):\n${users.join("\n")}`;
-      await tg.sendMessage(message.chatId, text);
+      await sendView(text);
       return;
     }
 
     case "tickets": {
       const tickets = await listOpenTickets(env.STATE);
-      if (tickets.length === 0) {
-        await tg.sendMessage(message.chatId, "ℹ️ تیکت بازی وجود ندارد.");
-        return;
-      }
-      const lines = [`🎫 تیکت‌های باز (${tickets.length}):`];
-      for (const t of tickets) {
-        const preview =
-          t.text.length > 80 ? `${t.text.slice(0, 80)}…` : t.text;
-        lines.push(`#${t.id} — کاربر ${t.userId}`, preview, "");
-      }
-      await tg.sendMessage(message.chatId, lines.join("\n"));
+      const view = adminTicketListView(tickets);
+      await sendView(view.text, { inline_keyboard: view.keyboard });
       return;
     }
 
@@ -472,10 +685,9 @@ async function handleTicketCloseCommand(
     );
     return;
   }
-  // اطلاع به کاربر — چت خصوصی کاربر id اوست (تیکت را خودش در چت خصوصی ثبت کرده)
   const notified = await tg.sendMessage(
     result.ticket.userId,
-    `🎫 تیکت #${ticketId} شما بسته شد. برای موضوع جدید /ticket بفرستید.`,
+    `✅ تیکت #${ticketId} شما بسته شد.\nبرای موضوع جدید از منوی ربات «📝 ثبت تیکت» را بزنید.`,
   );
   await tg.sendMessage(
     message.chatId,
@@ -510,14 +722,14 @@ async function handleSupportCommand(
   });
 
   if (input.name === "ticket") {
+    // فرم کوتاه: /ticket <متن> → مستقیم ثبت (موضوع از متن مشتق میشود)
     if (input.rest.length === 0) {
-      await tg.sendMessage(
-        message.chatId,
-        "برای ثبت تیکت: /ticket <متن پیام>\nمثال: /ticket لطفاً دسترسی ربات را برایم فعال کنید",
-      );
+      // بدون متن → شروع جریان دکمه‌ای کامل
+      await startTicketCreateFlow(tg, env, { chatId: message.chatId }, message.fromId);
       return;
     }
-    const result = await createTicket(env.STATE, message.fromId, input.rest);
+    const subject = `${input.rest.slice(0, 40)}${input.rest.length > 40 ? "…" : ""}`;
+    const result = await createTicket(env.STATE, message.fromId, subject, input.rest);
     if (!result.ok || !result.ticket) {
       const text =
         result.reason === "TEXT_TOO_LONG"
@@ -530,15 +742,11 @@ async function handleSupportCommand(
       await tg.sendMessage(message.chatId, text);
       return;
     }
-    await tg.sendMessage(
-      message.chatId,
-      `✅ تیکت #${result.ticket.id} ثبت شد.\nپشتیبانی به‌زودی بررسی می‌کند. پیگیری: /mytickets`,
-    );
-    // اطلاع ادمین — چت خصوصی ادمین
-    await tg.sendMessage(
-      env.ADMIN_USER_ID,
-      `🎫 تیکت جدید #${result.ticket.id}\nاز کاربر: ${message.fromId}\n\n${result.ticket.text}`,
-    );
+    const view = ticketCreatedView(result.ticket.id);
+    await tg.sendMessage(message.chatId, view.text, {
+      replyMarkup: { inline_keyboard: view.keyboard },
+    });
+    await notifyAdminNewTicket(tg, env, result.ticket);
     return;
   }
 
@@ -547,21 +755,10 @@ async function handleSupportCommand(
     env.STATE,
     message.fromId,
   );
-  if (open.length === 0) {
-    await tg.sendMessage(
-      message.chatId,
-      closedCount > 0
-        ? `شما تیکت بازی ندارید (${closedCount} تیکت بسته‌شده در تاریخچه).`
-        : "شما هنوز تیکتی ثبت نکرده‌اید. ثبت: /ticket <متن پیام>",
-    );
-    return;
-  }
-  const lines = [`🎫 تیکت‌های باز شما (${open.length}):`];
-  for (const t of open) {
-    const preview = t.text.length > 80 ? `${t.text.slice(0, 80)}…` : t.text;
-    lines.push(`#${t.id} — ${preview}`);
-  }
-  await tg.sendMessage(message.chatId, lines.join("\n"));
+  const view = ticketListView(open, closedCount);
+  await tg.sendMessage(message.chatId, view.text, {
+    replyMarkup: { inline_keyboard: view.keyboard },
+  });
 }
 
 // ---------- دستورات محافظت‌شده کاربر (هر دو گات) ----------
@@ -581,128 +778,42 @@ async function handleProtectedUserCommand(
   const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
     fetchFn: deps.fetchFn,
   });
+  const target: RenderTarget = { chatId: message.chatId };
 
-  // گات ۱: عضویت — سمت سرور، سه‌حالته
-  const membership = await checkChannelMembership(message.fromId, env, deps);
-  if (membership === "unknown") {
-    // خطای API ≠ عدم عضویت — دسترسی مسدود، بدون ادعای قطعی
-    await tg.sendMessage(message.chatId, MEMBERSHIP_UNKNOWN_TEXT);
-    return;
-  }
-  if (membership === "not-member") {
-    await sendJoinPrompt(tg, env, message.chatId);
-    logInfo("tg.command.membership-required", {
-      userId: message.fromId,
-    });
-    return;
-  }
-
-  // گات ۲: مجوز — عضویت به‌تنهایی مجوز نیست
-  const allowed = await isUserAllowed(env.STATE, message.fromId);
-  if (!allowed) {
-    await tg.sendMessage(message.chatId, RESTRICTED_TEXT, {
-      replyMarkup: buildRestrictedKeyboard(env),
-    });
-    logInfo("tg.command.denied", { userId: message.fromId });
-    return;
-  }
+  // گات ۱ و ۲ — سمت سرور
+  const allowed = await gateUser(tg, env, message.fromId, target, deps);
+  if (!allowed) return;
 
   switch (input.name) {
-    case "start":
-      await tg.sendMessage(message.chatId, USER_WELCOME_TEXT);
+    case "start": {
+      const view = mainMenuView(false);
+      await renderView(tg, target, view);
       return;
-    case "price":
-      await tg.sendMessage(message.chatId, await buildUserPriceText(env, deps));
+    }
+    case "price": {
+      const view = pricesView(await buildUserPriceText(env, deps));
+      await renderView(tg, target, view);
       return;
-    case "report":
-      await tg.sendMessage(
-        message.chatId,
-        await buildUserCachedReportText(env),
-      );
+    }
+    case "report": {
+      const view = pricesView(await buildUserCachedReportText(env));
+      await renderView(tg, target, view);
       return;
-    case "status":
-      await tg.sendMessage(message.chatId, await buildUserStatusText(env));
+    }
+    case "status": {
+      const view = statusView(await buildUserStatusText(env));
+      await renderView(tg, target, view);
       return;
+    }
     default:
       logInfo("tg.command.unknown", { command: input.name });
       return;
   }
 }
 
-// ---------- Callback دکمهها ----------
-
-async function handleCallback(
-  callback: TelegramCallbackInfo,
-  env: Env,
-  deps: JobDeps,
-): Promise<void> {
-  const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
-    fetchFn: deps.fetchFn,
-  });
-
-  // همیشه پاسخ — توقف نشانگر بارگذاری تلگرام (حتی در صورت رد)
-  await tg.answerCallbackQuery(callback.id);
-
-  // دکمههای ما فقط در چت خصوصی کاربر ارسال میشوند
-  if (callback.chatId !== callback.fromId || callback.fromId <= 0) {
-    logInfo("tg.callback.non-private", {});
-    return;
-  }
-
-  // ادمین این دکمهها را دریافت نمیکند
-  if (isAuthorizedAdmin(callback.fromId, env.ADMIN_USER_ID)) return;
-
-  if (!rateLimit(`tg:cb:${callback.fromId}`, CALLBACK_RATE_LIMIT)) {
-    logWarn("tg.callback.rate_limited", { userId: callback.fromId });
-    return;
-  }
-
-  switch (callback.data) {
-    case CALLBACK_CHECK_MEMBERSHIP: {
-      // بررسی مجدد سمت سرور — هیچ اعتمادی به کلیک قبلی نیست
-      const membership = await checkChannelMembership(
-        callback.fromId,
-        env,
-        deps,
-      );
-      if (membership === "unknown") {
-        await tg.sendMessage(callback.chatId, MEMBERSHIP_UNKNOWN_TEXT);
-        return;
-      }
-      if (membership === "not-member") {
-        await sendJoinPrompt(tg, env, callback.chatId);
-        logInfo("tg.callback.membership-required", {
-          userId: callback.fromId,
-        });
-        return;
-      }
-      const allowed = await isUserAllowed(env.STATE, callback.fromId);
-      if (!allowed) {
-        await tg.sendMessage(callback.chatId, RESTRICTED_TEXT, {
-          replyMarkup: buildRestrictedKeyboard(env),
-        });
-        logInfo("tg.callback.denied", { userId: callback.fromId });
-        return;
-      }
-      await tg.sendMessage(callback.chatId, USER_WELCOME_TEXT);
-      return;
-    }
-
-    case CALLBACK_SUPPORT_START:
-      // پشتیبانی برای همه — بدون گات عضویت/مجوز
-      await tg.sendMessage(callback.chatId, SUPPORT_INSTRUCTIONS_TEXT);
-      return;
-
-    default:
-      // data جعلی/ناشناس — فقط لاگ، بدون پاسخ اضافی
-      logWarn("tg.callback.unknown-action", { data: callback.data });
-      return;
-  }
-}
-
 // ---------- متنهای وضعیت/قیمت ----------
 
-async function buildStatusText(env: Env): Promise<string> {
+async function buildAdminStatusText(env: Env): Promise<string> {
   const paused = await isPaused(env.STATE);
   const usdStatus = await readJson<RunStatus>(env.STATE, USD_STATUS_KEY);
   const reportStatus = await readJson<RunStatus>(env.STATE, REPORT_STATUS_KEY);
@@ -712,7 +823,7 @@ async function buildStatusText(env: Env): Promise<string> {
     "📊 وضعیت ربات",
     `وضعیت: ${paused ? "⏸ متوقف (pause)" : "✅ فعال"}`,
     `Provider: ${env.PRICE_PROVIDER}${
-      env.PRICE_PROVIDER === "stub" ? " (بدون API واقعی — مرحله بعد)" : ""
+      env.PRICE_PROVIDER === "stub" ? " (بدون API واقعی)" : ""
     }`,
     `آخرین اجرای دلار: ${
       usdStatus
@@ -729,24 +840,19 @@ async function buildStatusText(env: Env): Promise<string> {
   ];
   if (lastPrice) {
     lines.push(
-      `آخرین قیمت دلار: خرید ${faMoney(lastPrice.buy)} | فروش ${faMoney(
-        lastPrice.sell,
-      )} | معامله ${faMoney(lastPrice.trade)}`,
+      `آخرین قیمت دلار: خرید ${lastPrice.buy} | فروش ${lastPrice.sell} | معامله ${lastPrice.trade}`,
     );
   }
-  // اعلام تنظیمات ناقص — بدون این هشدار، حذف شدن دکمه عضویت بیصدا میماند
   if (resolveChannelLink(env) === "") {
-    lines.push(
-      "⚠️ لینک عمومی کانال پیکربندی نشده (CHANNEL_LINK خالی + کانال خصوصی) — دکمه «عضویت» حذف میشود",
-    );
+    lines.push("⚠️ لینک عمومی کانال پیکربندی نشده — دکمه «عضویت» حذف میشود");
   }
   if (env.SUPPORT_LINK === "") {
-    lines.push("ℹ️ SUPPORT_LINK خالی — دکمه پشتیبانی به سیستم تیکت داخلی وصل است");
+    lines.push("ℹ️ SUPPORT_LINK خالی — پشتیبانی از سیستم تیکت داخلی ربات استفاده میکند");
   }
   return lines.join("\n");
 }
 
-/** قیمت لحظه‌ای ادمین — همان مسیر قبلی (دلار فردایی) */
+/** قیمت لحظه‌ای ادمین — مسیر میز خرید/فروش (providerهای فردایی) */
 async function buildAdminPriceText(
   env: Env,
   deps: JobDeps,
@@ -755,7 +861,7 @@ async function buildAdminPriceText(
     const provider = deps.provider ?? getProvider(env);
     const price = await provider.fetchUsdTehran();
     if (!price) {
-      return `⚠️ فعلاً داده‌ای از provider دریافت نشد (provider: ${env.PRICE_PROVIDER}). هیچ مقدار جایگزین نمایش داده نمی‌شود.`;
+      return `⚠️ فعلاً داده‌ای از provider دریافت نشد (provider: ${env.PRICE_PROVIDER}).`;
     }
     const verdict = validateUsdPrice(price);
     if (!verdict.ok) {
@@ -767,15 +873,11 @@ async function buildAdminPriceText(
   }
 }
 
-/** قیمت کاربر — گزارش کامل بازار (مسیر جدا از دستور ادمین) */
+/** قیمت کاربر — گزارش کامل بازار از provider */
 async function buildUserPriceText(env: Env, deps: JobDeps): Promise<string> {
   const now = deps.now ?? (() => new Date());
   const marketHours = deps.marketHours ?? DEFAULT_MARKET_HOURS;
-  const market = evaluateMarketSession(
-    now(),
-    marketHours.defaultSession,
-    marketHours,
-  );
+  const market = evaluateMarketSession(now(), marketHours.defaultSession, marketHours);
   if (market.state === "UNKNOWN") {
     // fail-closed — سازگار با سیاست جابها
     return "❓ وضعیت ساعت بازار نامشخص است — برای امنیت قیمت نمایش داده نمی‌شود.";
@@ -784,7 +886,7 @@ async function buildUserPriceText(env: Env, deps: JobDeps): Promise<string> {
     const provider = deps.provider ?? getProvider(env);
     const report = await provider.fetchMarketReport();
     if (!report) {
-      return `⚠️ فعلاً داده‌ای از provider دریافت نشد (provider: ${env.PRICE_PROVIDER}). هیچ مقدار جایگزین نمایش داده نمی‌شود.`;
+      return "⚠️ الان قیمت‌ها در دسترس نیستند. کمی بعد دوباره تلاش کنید.";
     }
     const items = sanitizeReportItems(report.items);
     const text = formatMarketReport({ ...report, items });
@@ -793,7 +895,7 @@ async function buildUserPriceText(env: Env, deps: JobDeps): Promise<string> {
     }
     return text;
   } catch {
-    return "❌ خطا در دریافت قیمت از provider.";
+    return "❌ خطا در دریافت قیمت. لطفاً کمی بعد دوباره تلاش کنید.";
   }
 }
 
@@ -801,7 +903,7 @@ async function buildUserPriceText(env: Env, deps: JobDeps): Promise<string> {
 async function buildUserCachedReportText(env: Env): Promise<string> {
   const cached = await readLastReport(env.STATE);
   if (!cached) {
-    return "هنوز گزارشی ذخیره نشده است. گزارش تازه: /price";
+    return "هنوز گزارشی ذخیره نشده است. برای گزارش تازه، «📊 قیمت‌های بازار» را بزنید.";
   }
   const items = sanitizeReportItems(cached.items);
   const text = formatMarketReport({ ...cached, items });
@@ -813,10 +915,19 @@ async function buildUserCachedReportText(env: Env): Promise<string> {
 
 /** وضعیت ساده کاربر — بدون جزئیات مدیریتی */
 async function buildUserStatusText(env: Env): Promise<string> {
+  const now = new Date();
+  const market = evaluateMarketSession(
+    now,
+    DEFAULT_MARKET_HOURS.defaultSession,
+    DEFAULT_MARKET_HOURS,
+  );
   const paused = await isPaused(env.STATE);
   const lastReport = await readLastReport(env.STATE);
+  const marketLabel =
+    market.state === "OPEN" ? "✅ باز است" : market.state === "CLOSED" ? "🌙 بسته است" : "❓ نامشخص";
   const lines = [
     "📊 وضعیت ربات",
+    `وضعیت بازار: ${marketLabel}`,
     `وضعیت انتشار کانال: ${paused ? "⏸ متوقف" : "✅ فعال"}`,
     `آخرین گزارش بازار: ${
       lastReport ? faTimestamp(lastReport.fetchedAt) : "—"

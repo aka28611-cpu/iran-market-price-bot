@@ -6,21 +6,27 @@ import {
 } from "../src/auth/telegram-auth";
 import { resetRateLimiterForTests } from "../src/ratelimit";
 import {
+  CONVERSATION_PREFIX,
   LAST_REPORT_KEY,
+  TICKETS_COUNT_KEY,
   TICKETS_OPEN_KEY,
 } from "../src/state";
 import { handleTelegramUpdate } from "../src/telegram/commands";
 import {
+  allTexts,
   callbackUpdate,
+  editedMessages,
   fakeProvider,
   makeEnv,
   MockKV,
   sentMessages,
   telegramRecorder,
+  textUpdate,
   userUpdate,
 } from "./helpers";
 
 const USER_ID = 999111222;
+const ADMIN_ID = 100200300;
 
 function fakeReport() {
   return {
@@ -34,12 +40,18 @@ function fakeReport() {
   };
 }
 
+/** متن آخرین پیام (ارسالی یا ویرایشی) */
+function lastText(calls: Array<{ url: string; body: Record<string, unknown> }>): string {
+  const texts = allTexts(calls);
+  return texts[texts.length - 1] ?? "";
+}
+
 describe("جریان /start — عضویت اجباری (سمت سرور)", () => {
   beforeEach(() => {
     resetRateLimiterForTests();
   });
 
-  it("کاربر غیرعضو → پیام عضویت + دکمه بررسی؛ getChatMember با کانال و کاربر درست", async () => {
+  it("کاربر غیرعضو → پیام عضویت + دکمه بررسی مجدد؛ getChatMember با کانال و کاربر درست", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
     const env = makeEnv();
     await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
@@ -53,11 +65,11 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
 
     const msgs = sentMessages(calls);
     expect(msgs).toHaveLength(1);
-    expect(String(msgs[0]?.body.text)).toContain("عضو کانال قیمت ارز");
+    expect(String(msgs[0]?.body.text)).toContain("عضو کانال شوید");
     const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
-    // کانال خصوصی بدون CHANNEL_LINK → فقط دکمه بررسی (بدون URL ساختگی)
+    // کانال خصوصی بدون CHANNEL_LINK → فقط دکمه بررسی مجدد (بدون URL ساختگی)
     expect(markup.inline_keyboard).toHaveLength(1);
-    expect(markup.inline_keyboard[0][0].callback_data).toBe("check_membership");
+    expect(markup.inline_keyboard[0][0].callback_data).toBe("rc");
     expect(markup.inline_keyboard[0][0].url).toBeUndefined();
   });
 
@@ -71,12 +83,8 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
     expect(markup.inline_keyboard[0][0].url).toBe(
       "https://t.me/my_market_channel",
     );
-    expect(markup.inline_keyboard[0][0].text).toBe(
-      "📊 عضویت در کانال قیمت ارز",
-    );
-    expect(markup.inline_keyboard[1][0].callback_data).toBe(
-      "check_membership",
-    );
+    expect(markup.inline_keyboard[0][0].text).toBe("📢 عضویت در کانال");
+    expect(markup.inline_keyboard[1][0].callback_data).toBe("rc");
   });
 
   it("CHANNEL_LINK صریح → دکمه با همان لینک", async () => {
@@ -88,28 +96,31 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
     expect(markup.inline_keyboard[0][0].url).toBe("https://t.me/join/abc123");
   });
 
-  it("کاربر عضو اما بدون مجوز → متن دقیق محدودیت + دو دکمه", async () => {
+  it("پیام عضویت بدون لینک، به دکمه عضویتِ غایب ارجاع نمیدهد", async () => {
+    const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
+    const env = makeEnv(); // کانال خصوصی + CHANNEL_LINK خالی
+    await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
+    const msgs = sentMessages(calls);
+    expect(String(msgs[0]?.body.text)).not.toContain("۱) روی دکمه");
+    expect(String(msgs[0]?.body.text)).toContain("بررسی مجدد");
+    const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
+    expect(markup.inline_keyboard).toHaveLength(1);
+    expect(markup.inline_keyboard[0][0].callback_data).toBe("rc");
+  });
+
+  it("کاربر عضو اما بدون مجوز → پیام محدودیت + دکمه ثبت تیکت (مسیر درخواست دسترسی)", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const env = makeEnv({ CHANNEL_LINK: "https://t.me/my_market_channel" });
     await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
     const msgs = sentMessages(calls);
     expect(msgs).toHaveLength(1);
-    expect(String(msgs[0]?.body.text)).toBe(
-      [
-        "⚠️ دسترسی غیرمجاز",
-        "",
-        "عضویت شما در کانال تأیید شد، اما امکان استفاده مستقیم از امکانات این ربات برای حساب شما فعال نیست.",
-        "",
-        "📊 برای مشاهده قیمت‌های ارز و دریافت آخرین به‌روزرسانی‌ها، به کانال رسمی مراجعه کنید.",
-        "",
-        "🎫 برای درخواست دسترسی یا پیگیری مشکل، با پشتیبانی تماس بگیرید.",
-      ].join("\n"),
-    );
+    expect(String(msgs[0]?.body.text)).toContain("فعال نیست");
     const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
-    expect(markup.inline_keyboard[0][0].url).toBe(
+    // دکمه ثبت تیکت = مسیر فرار پشتیبانی
+    expect(markup.inline_keyboard[0][0].callback_data).toBe("tkn");
+    expect(markup.inline_keyboard[1][0].url).toBe(
       "https://t.me/my_market_channel",
     );
-    expect(markup.inline_keyboard[1][0].callback_data).toBe("support_start");
   });
 
   it("SUPPORT_LINK خارجی → دکمه پشتیبانی با URL", async () => {
@@ -118,7 +129,8 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
     await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
     const msgs = sentMessages(calls);
     const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
-    expect(markup.inline_keyboard[0][0].url).toBe("https://t.me/support_bot");
+    const urls = JSON.stringify(markup.inline_keyboard);
+    expect(urls).toContain("https://t.me/support_bot");
   });
 
   it("خطای API عضویت ≠ عدم عضویت — پیام «بررسی ممکن نیست» بدون ادعای قطعی", async () => {
@@ -129,11 +141,9 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
     await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
     const msgs = sentMessages(calls);
     expect(msgs).toHaveLength(1);
-    expect(String(msgs[0]?.body.text)).toContain(
-      "امکان بررسی عضویت شما وجود ندارد",
-    );
+    expect(String(msgs[0]?.body.text)).toContain("نمیتوان عضویت شما را بررسی کرد");
     // هیچ ادعایی درباره عدم عضویت یا محدودیت دسترسی نیست
-    expect(String(msgs[0]?.body.text)).not.toContain("دسترسی غیرمجاز");
+    expect(String(msgs[0]?.body.text)).not.toContain("فعال نیست");
   });
 
   it("دورزدن گات با دستور مستقیم ممکن نیست — /price غیرعضو → پیام عضویت", async () => {
@@ -145,15 +155,15 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
       provider,
     });
     const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("عضو کانال قیمت ارز");
+    expect(String(msgs[0]?.body.text)).toContain("عضو کانال شوید");
     expect(String(msgs[0]?.body.text)).not.toContain("گزارش بازار");
   });
 
-  it("کاربر مجاز → خوش‌آمد + /price گزارش بازار + /status", async () => {
+  it("کاربر مجاز → /start منوی دکمهای + /price گزارش بازار + /status", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
-    await allowUser(kv, USER_ID, 100200300);
+    await allowUser(kv, USER_ID, ADMIN_ID);
 
     await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
     await handleTelegramUpdate(userUpdate("/price"), env, {
@@ -163,8 +173,16 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
     await handleTelegramUpdate(userUpdate("/status"), env, { fetchFn });
 
     const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("خوش آمدید");
+    expect(String(msgs[0]?.body.text)).toContain("انتخاب کنید");
+    const startMarkup = JSON.parse(String(msgs[0]?.body.reply_markup));
+    const startButtons = JSON.stringify(startMarkup.inline_keyboard);
+    expect(startButtons).toContain("px");
+    expect(startButtons).toContain("tkn");
+    expect(startButtons).not.toContain("پنل مدیریت");
     expect(String(msgs[1]?.body.text)).toContain("گزارش بازار ایران");
+    // /price هم دکمه بازگشت به منو دارد
+    const priceMarkup = JSON.parse(String(msgs[1]?.body.reply_markup));
+    expect(JSON.stringify(priceMarkup.inline_keyboard)).toContain("home");
     expect(String(msgs[2]?.body.text)).toContain("وضعیت ربات");
   });
 
@@ -172,7 +190,7 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
-    await allowUser(kv, USER_ID, 100200300);
+    await allowUser(kv, USER_ID, ADMIN_ID);
     const report = fakeReport();
     await kv.put(LAST_REPORT_KEY, JSON.stringify(report));
 
@@ -181,15 +199,27 @@ describe("جریان /start — عضویت اجباری (سمت سرور)", () =
     expect(String(msgs[0]?.body.text)).toContain("گزارش بازار ایران");
   });
 
-  it("کاربر مجاز با stub → پیام صادقانه «داده‌ای دریافت نشد» بدون قیمت جعلی", async () => {
+  it("کاربر مجاز با stub → پیام صادقانه «در دسترس نیست» بدون قیمت جعلی", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
-    await allowUser(kv, USER_ID, 100200300);
+    await allowUser(kv, USER_ID, ADMIN_ID);
     await handleTelegramUpdate(userUpdate("/price"), env, { fetchFn });
     const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("داده‌ای");
-    expect(String(msgs[0]?.body.text)).toContain("stub");
+    expect(String(msgs[0]?.body.text)).toContain("در دسترس نیست");
+    // هیچ عدد قیمت جعلی نمایش داده نمیشود
+    expect(String(msgs[0]?.body.text)).not.toMatch(/\d{3}[،,]/);
+  });
+
+  it("متن نامربوط بدون مکالمه → راهنمای منو با دکمه 🏠", async () => {
+    const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
+    const env = makeEnv();
+    await handleTelegramUpdate(userUpdate("سلام"), env, { fetchFn });
+    const msgs = sentMessages(calls);
+    expect(msgs).toHaveLength(1);
+    expect(String(msgs[0]?.body.text)).toContain("از منوی زیر");
+    const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
+    expect(markup.inline_keyboard[0][0].callback_data).toBe("home");
   });
 
   it("دستورات کاربر در گروه (chat ≠ from) بی‌پاسخ می‌مانند", async () => {
@@ -214,7 +244,7 @@ describe("پشتیبانی — مسیر فرار برای همه کاربران"
     resetRateLimiterForTests();
   });
 
-  it("/ticket برای کاربر غیرعضو هم کار میکند (بدون گات)", async () => {
+  it("/ticket <متن> برای کاربر غیرعضو هم کار میکند (بدون گات)", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -223,45 +253,153 @@ describe("پشتیبانی — مسیر فرار برای همه کاربران"
     });
     const msgs = sentMessages(calls);
     expect(msgs).toHaveLength(2); // تأیید کاربر + اطلاع ادمین
-    expect(String(msgs[0]?.body.text)).toContain("#1");
-    expect(msgs[1]?.body.chat_id).toBe(100200300);
-    expect(JSON.parse(kv.store.get(TICKETS_OPEN_KEY) ?? "[]")).toHaveLength(1);
+    expect(String(msgs[0]?.body.text)).toContain("ثبت شد");
+    expect(msgs[1]?.body.chat_id).toBe(ADMIN_ID);
+    expect(
+      JSON.parse(kv.store.get(TICKETS_OPEN_KEY) ?? "[]"),
+    ).toHaveLength(1);
   });
 
-  it("/ticket بدون متن → راهنما", async () => {
+  it("/ticket بدون متن → شروع جریان دکمهای (مرحله ۱: موضوع)", async () => {
     const { calls, fetchFn } = telegramRecorder();
-    const env = makeEnv();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
     await handleTelegramUpdate(userUpdate("/ticket"), env, { fetchFn });
     const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("برای ثبت تیکت");
+    expect(String(msgs[0]?.body.text)).toContain("مرحله ۱");
+    // مکالمه در KV ثبت شده با دکمه لغو
+    const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
+    expect(markup.inline_keyboard[0][0].callback_data).toBe("cxl");
+    expect(kv.store.get(`${CONVERSATION_PREFIX}${USER_ID}`)).toBeDefined();
   });
 
   it("/mytickets فقط تیکتهای خود کاربر را نشان میدهد (مالکیت سمت سرور)", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
-    // تیکت کاربر دیگر با نوشتن مستقیم در KV (شبیه state قبلی)
     await kv.put(
       TICKETS_OPEN_KEY,
       JSON.stringify([
         {
           id: 1,
           userId: 777777777,
+          subject: "موضوع دیگران",
           text: "تیکت شخص دیگری",
           createdAt: new Date().toISOString(),
+          replies: [],
         },
         {
           id: 2,
           userId: USER_ID,
+          subject: "موضوع من",
           text: "تیکت من",
           createdAt: new Date().toISOString(),
+          replies: [],
         },
       ]),
     );
     await handleTelegramUpdate(userUpdate("/mytickets"), env, { fetchFn });
     const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("تیکت من");
-    expect(String(msgs[0]?.body.text)).not.toContain("تیکت شخص دیگری");
+    expect(String(msgs[0]?.body.text)).toContain("باز شما");
+    const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
+    const markupJson = JSON.stringify(markup.inline_keyboard);
+    expect(markupJson).toContain("tkv2");
+    expect(markupJson).not.toContain("tkv1");
+  });
+});
+
+describe("جریان کامل ثبت تیکت با دکمه (مکالمه KV)", () => {
+  beforeEach(() => {
+    resetRateLimiterForTests();
+  });
+
+  it("tkn → موضوع → متن → تأیید → ثبت + اطلاع ادمین", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+
+    // ۱) شروع جریان از دکمه (ویرایش همان پیام)
+    await handleTelegramUpdate(callbackUpdate("tkn"), env, { fetchFn });
+    let edits = editedMessages(calls);
+    expect(edits).toHaveLength(1);
+    expect(String(edits[0]?.body.message_id)).toBe("30");
+    expect(String(edits[0]?.body.text)).toContain("مرحله ۱");
+
+    // ۲) موضوع
+    await handleTelegramUpdate(textUpdate("فعال‌سازی دسترسی"), env, { fetchFn });
+    expect(lastText(calls)).toContain("مرحله ۲");
+    expect(lastText(calls)).toContain("فعال‌سازی دسترسی");
+
+    // ۳) متن پیام
+    await handleTelegramUpdate(textUpdate("لطفاً دسترسی ربات را فعال کنید"), env, {
+      fetchFn,
+    });
+    expect(lastText(calls)).toContain("تأیید");
+    expect(lastText(calls)).toContain("لطفاً دسترسی ربات را فعال کنید");
+
+    // ۴) تأیید از دکمه
+    await handleTelegramUpdate(callbackUpdate("tkcf"), env, { fetchFn });
+    expect(lastText(calls)).toContain("ثبت شد");
+    expect(kv.store.get(TICKETS_COUNT_KEY)).toBe("1");
+
+    // مکالمه پاک شده است
+    expect(kv.store.get(`${CONVERSATION_PREFIX}${USER_ID}`)).toBeUndefined();
+
+    // ادمین با دکمههای مدیریتی مطلع شد
+    const msgs = sentMessages(calls);
+    const adminMsg = msgs.find((m) => m.body.chat_id === ADMIN_ID);
+    expect(adminMsg).toBeDefined();
+    const adminMarkup = JSON.parse(String(adminMsg?.body.reply_markup));
+    const adminButtons = JSON.stringify(adminMarkup.inline_keyboard);
+    expect(adminButtons).toContain("adr1"); // دکمه پاسخ ادمین
+    expect(adminButtons).toContain("adc1"); // دکمه بستن ادمین
+  });
+
+  it("موضوع بلند رد میشود و جریان در همان مرحله میماند", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await handleTelegramUpdate(callbackUpdate("tkn"), env, { fetchFn });
+    await handleTelegramUpdate(textUpdate("x".repeat(81)), env, { fetchFn });
+    expect(lastText(calls)).toContain("۸۰ کاراکتر");
+    expect(lastText(calls)).toContain("مرحله ۱"); // همان مرحله
+  });
+
+  it("لغو (cxl) → مکالمه پاک + بازگشت به منوی اصلی", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await handleTelegramUpdate(callbackUpdate("tkn"), env, { fetchFn });
+    await handleTelegramUpdate(callbackUpdate("cxl"), env, { fetchFn });
+    expect(lastText(calls)).toContain("انتخاب کنید");
+    expect(kv.store.get(`${CONVERSATION_PREFIX}${USER_ID}`)).toBeUndefined();
+  });
+
+  it("پیام ویرایش‌شده (edited_message) در جریان نادیده گرفته میشود — پاسخ تکراری ثبت نمیشود", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await handleTelegramUpdate(callbackUpdate("tkn"), env, { fetchFn });
+    await handleTelegramUpdate(textUpdate("موضوع", USER_ID, USER_ID, 40, true), env, {
+      fetchFn,
+    });
+    // هیچ مرحله جدیدی رندر نشد
+    const edits = editedMessages(calls);
+    expect(edits).toHaveLength(1);
+  });
+
+  it("دستور /start در میانهٔ جریان → مکالمه لغو و منو نمایش داده میشود", async () => {
+    const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await allowUser(kv, USER_ID, ADMIN_ID);
+    await handleTelegramUpdate(callbackUpdate("tkn"), env, { fetchFn });
+    await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
+    expect(kv.store.get(`${CONVERSATION_PREFIX}${USER_ID}`)).toBeUndefined();
+    const msgs = sentMessages(calls);
+    expect(String(msgs[msgs.length - 1]?.body.text)).toContain(
+      "انتخاب کنید",
+    );
   });
 });
 
@@ -270,50 +408,64 @@ describe("Callback دکمهها — امنیت و مسیرها", () => {
     resetRateLimiterForTests();
   });
 
-  it("check_membership: غیرعضو → پیام عضویت؛ answerCallbackQuery همیشه صدا زده میشود", async () => {
+  it("rc (بررسی مجدد): غیرعضو → ویرایش همان پیام به پیام عضویت؛ answerCallbackQuery همیشه صدا زده میشود", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
     const env = makeEnv();
-    await handleTelegramUpdate(callbackUpdate("check_membership"), env, {
+    await handleTelegramUpdate(callbackUpdate("rc"), env, {
       fetchFn,
     });
     expect(
       calls.some((c) => c.url.endsWith("/answerCallbackQuery")),
     ).toBe(true);
-    const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("عضو کانال قیمت ارز");
+    const edits = editedMessages(calls);
+    expect(edits).toHaveLength(1);
+    expect(String(edits[0]?.body.message_id)).toBe("30"); // همان پیام ویرایش شد
+    expect(String(edits[0]?.body.text)).toContain("عضو کانال شوید");
+    expect(sentMessages(calls)).toHaveLength(0); // پیام جدیدی ارسال نشد
   });
 
-  it("check_membership: عضو بدون مجوز → پیام محدودیت", async () => {
+  it("rc: عضو بدون مجوز → ویرایش به پیام محدودیت", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const env = makeEnv();
-    await handleTelegramUpdate(callbackUpdate("check_membership"), env, {
+    await handleTelegramUpdate(callbackUpdate("rc"), env, {
       fetchFn,
     });
-    const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("دسترسی غیرمجاز");
+    const edits = editedMessages(calls);
+    expect(String(edits[0]?.body.text)).toContain("فعال نیست");
   });
 
-  it("check_membership: عضو مجاز → خوش‌آمد", async () => {
+  it("rc: عضو مجاز → ویرایش به منوی اصلی", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
-    await allowUser(kv, USER_ID, 100200300);
-    await handleTelegramUpdate(callbackUpdate("check_membership"), env, {
+    await allowUser(kv, USER_ID, ADMIN_ID);
+    await handleTelegramUpdate(callbackUpdate("rc"), env, {
       fetchFn,
     });
-    const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("خوش آمدید");
+    const edits = editedMessages(calls);
+    expect(String(edits[0]?.body.text)).toContain("انتخاب کنید");
+    expect(String(edits[0]?.body.text)).not.toContain("پنل مدیریت");
   });
 
-  it("support_start → راهنمای تیکت (بدون گات عضویت)", async () => {
-    const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
+  it("rc از ادمین → منوی ادمین (با پنل مدیریت)", async () => {
+    const { calls, fetchFn } = telegramRecorder();
     const env = makeEnv();
-    await handleTelegramUpdate(callbackUpdate("support_start"), env, {
+    await handleTelegramUpdate(callbackUpdate("rc", ADMIN_ID), env, {
       fetchFn,
     });
-    const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("پشتیبانی و ثبت تیکت");
-    expect(String(msgs[0]?.body.text)).toContain("/ticket");
+    const edits = editedMessages(calls);
+    expect(String(edits[0]?.body.text)).toContain("انتخاب کنید");
+    const markup = JSON.parse(String(edits[0]?.body.reply_markup));
+    expect(JSON.stringify(markup.inline_keyboard)).toContain("پنل مدیریت");
+  });
+
+  it("px (قیمتها) فقط با گات — غیرعضو پیام عضویت میگیرد نه قیمت", async () => {
+    const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
+    const env = makeEnv();
+    await handleTelegramUpdate(callbackUpdate("px"), env, { fetchFn });
+    const edits = editedMessages(calls);
+    expect(String(edits[0]?.body.text)).toContain("عضو کانال شوید");
+    expect(String(edits[0]?.body.text)).not.toContain("گزارش بازار");
   });
 
   it("data جعلی/ناشناس → فقط پاسخ تلگرام، بدون هیچ پیام", async () => {
@@ -324,13 +476,14 @@ describe("Callback دکمهها — امنیت و مسیرها", () => {
       calls.some((c) => c.url.endsWith("/answerCallbackQuery")),
     ).toBe(true);
     expect(sentMessages(calls)).toHaveLength(0);
+    expect(editedMessages(calls)).toHaveLength(0);
   });
 
   it("callback در چت غیرخصوصی → فقط پاسخ تلگرام، بدون پیام", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const env = makeEnv();
     await handleTelegramUpdate(
-      callbackUpdate("check_membership", USER_ID, -100999),
+      callbackUpdate("rc", USER_ID, -100999),
       env,
       { fetchFn },
     );
@@ -338,33 +491,171 @@ describe("Callback دکمهها — امنیت و مسیرها", () => {
       calls.some((c) => c.url.endsWith("/answerCallbackQuery")),
     ).toBe(true);
     expect(sentMessages(calls)).toHaveLength(0);
+    expect(editedMessages(calls)).toHaveLength(0);
   });
 
-  it("callback ادمین → بدون پیام (ادمین این دکمهها را دریافت نمیکند)", async () => {
-    const { calls, fetchFn } = telegramRecorder();
+  it("دکمههای ادمین برای کاربر معمولی اجرا نمیشوند (adt بدون پیام)", async () => {
+    const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const env = makeEnv();
-    await handleTelegramUpdate(
-      callbackUpdate("check_membership", 100200300),
-      env,
-      { fetchFn },
-    );
+    await handleTelegramUpdate(callbackUpdate("adt"), env, { fetchFn });
     expect(
       calls.some((c) => c.url.endsWith("/answerCallbackQuery")),
     ).toBe(true);
     expect(sentMessages(calls)).toHaveLength(0);
+    expect(editedMessages(calls)).toHaveLength(0);
   });
 
   it("callbackهای مکرر rate-limit میشوند", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const env = makeEnv();
     for (let i = 0; i < 25; i += 1) {
-      await handleTelegramUpdate(callbackUpdate("check_membership"), env, {
+      await handleTelegramUpdate(callbackUpdate("rc"), env, {
         fetchFn,
       });
     }
+    const edits = editedMessages(calls);
+    expect(edits.length).toBeLessThan(25);
+    expect(edits.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it("tkv تیکت کاربر دیگر → «در دسترس شما نیست» (ملکیت سمت سرور)", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await kv.put(
+      TICKETS_OPEN_KEY,
+      JSON.stringify([
+        {
+          id: 1,
+          userId: 777777777,
+          subject: "s",
+          text: "تیکت شخص دیگری",
+          createdAt: new Date().toISOString(),
+          replies: [],
+        },
+      ]),
+    );
+    await handleTelegramUpdate(callbackUpdate("tkv1"), env, { fetchFn });
+    const edits = editedMessages(calls);
+    expect(String(edits[0]?.body.text)).toContain("در دسترس شما نیست");
+    expect(String(edits[0]?.body.text)).not.toContain("تیکت شخص دیگری");
+  });
+});
+
+describe("گفتگوی تیکت — پاسخ و بستن با دکمه", () => {
+  beforeEach(() => {
+    resetRateLimiterForTests();
+  });
+
+  function seedTicket(kv: MockKV, userId = USER_ID, id = 1) {
+    return kv.put(
+      TICKETS_OPEN_KEY,
+      JSON.stringify([
+        {
+          id,
+          userId,
+          subject: "دسترسی",
+          text: "لطفاً فعال کنید",
+          createdAt: new Date().toISOString(),
+          replies: [],
+        },
+      ]),
+    );
+  }
+
+  it("پاسخ کاربر (tkr → متن) → ثبت پاسخ + اطلاع ادمین", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await seedTicket(kv);
+
+    await handleTelegramUpdate(callbackUpdate("tkr1"), env, { fetchFn });
+    expect(lastText(calls)).toContain("پاسخ به تیکت");
+
+    await handleTelegramUpdate(textUpdate("ممنون، منتظرم"), env, { fetchFn });
+    expect(lastText(calls)).toContain("گفتگو");
+    expect(lastText(calls)).toContain("ممنون، منتظرم");
+
+    // ادمین مطلع شد
     const msgs = sentMessages(calls);
-    expect(msgs.length).toBeLessThan(25);
-    expect(msgs.length).toBeGreaterThanOrEqual(20);
+    const adminMsg = msgs.find((m) => m.body.chat_id === ADMIN_ID);
+    expect(adminMsg).toBeDefined();
+    expect(String(adminMsg?.body.text)).toContain("پاسخ جدید کاربر");
+  });
+
+  it("پاسخ ادمین (adr → متن) → تحویل به چت کاربر با دکمههای پیگیری", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await seedTicket(kv);
+
+    await handleTelegramUpdate(callbackUpdate("adr1", ADMIN_ID), env, { fetchFn });
+    expect(lastText(calls)).toContain("پاسخ به تیکت");
+
+    await handleTelegramUpdate(
+      textUpdate("سلام! بررسی میشود", ADMIN_ID, ADMIN_ID, 50),
+      env,
+      { fetchFn },
+    );
+    // پیام تحویل به کاربر
+    const msgs = sentMessages(calls);
+    const userMsg = msgs.find((m) => m.body.chat_id === USER_ID);
+    expect(userMsg).toBeDefined();
+    expect(String(userMsg?.body.text)).toContain("پاسخ جدید پشتیبانی");
+    const markup = JSON.parse(String(userMsg?.body.reply_markup));
+    const buttons = JSON.stringify(markup.inline_keyboard);
+    expect(buttons).toContain("tkr1"); // دکمه پاسخ کاربر روی همان تیکت
+  });
+
+  it("متن پاسخ ادمین فقط از خود ادمین پذیرفته میشود (جعل نقش رد)", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await seedTicket(kv);
+
+    // کاربر معمولی سعی میکند در جریان admin_reply (KV دستکاریشده) بنویسد
+    await kv.put(
+      `${CONVERSATION_PREFIX}${USER_ID}`,
+      JSON.stringify({
+        flow: "admin_reply",
+        step: "text",
+        ticketId: 1,
+        promptMessageId: 30,
+        promptChatId: USER_ID,
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+    await handleTelegramUpdate(textUpdate("من ادمین نیستم"), env, { fetchFn });
+    // پاسخ support ثبت نشد
+    const open = JSON.parse(kv.store.get(TICKETS_OPEN_KEY) ?? "[]");
+    expect(open[0]?.replies ?? []).toHaveLength(0);
+  });
+
+  it("بستن تیکت کاربر (tkc → tky) → تیکت بسته + اطلاع ادمین", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await seedTicket(kv);
+
+    await handleTelegramUpdate(callbackUpdate("tkc1"), env, { fetchFn });
+    expect(lastText(calls)).toContain("بسته شود؟");
+
+    await handleTelegramUpdate(callbackUpdate("tky1"), env, { fetchFn });
+    expect(lastText(calls)).toContain("بسته شد");
+    expect(JSON.parse(kv.store.get(TICKETS_OPEN_KEY) ?? "[]")).toHaveLength(0);
+    const adminNotified = sentMessages(calls).some(
+      (m) => m.body.chat_id === ADMIN_ID,
+    );
+    expect(adminNotified).toBe(true);
+  });
+
+  it("tky روی تیکت بستهشده → پیام نامعتبر", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    // تیکتی وجود ندارد
+    await handleTelegramUpdate(callbackUpdate("tky5"), env, { fetchFn });
+    expect(lastText(calls)).toContain("معتبر نیست");
   });
 });
 
@@ -382,7 +673,7 @@ describe("بازبینی مسیرهای حیاتی — پشتیبانی، قیم
     });
     const msgs = sentMessages(calls);
     expect(msgs).toHaveLength(1);
-    expect(String(msgs[0]?.body.text)).toContain("دسترسی غیرمجاز");
+    expect(String(msgs[0]?.body.text)).toContain("فعال نیست");
     expect(String(msgs[0]?.body.text)).not.toContain("گزارش بازار");
   });
 
@@ -393,7 +684,7 @@ describe("بازبینی مسیرهای حیاتی — پشتیبانی، قیم
     await kv.put(LAST_REPORT_KEY, JSON.stringify(fakeReport()));
     await handleTelegramUpdate(userUpdate("/report"), env, { fetchFn });
     const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("دسترسی غیرمجاز");
+    expect(String(msgs[0]?.body.text)).toContain("فعال نیست");
     expect(String(msgs[0]?.body.text)).not.toContain("گزارش بازار ایران");
   });
 
@@ -407,25 +698,22 @@ describe("بازبینی مسیرهای حیاتی — پشتیبانی، قیم
       { fetchFn },
     );
     const msgs = sentMessages(calls);
-    expect(msgs).toHaveLength(2); // تأیید کاربر + اطلاع ادمین
-    expect(String(msgs[0]?.body.text)).toContain("#1");
-    expect(msgs[1]?.body.chat_id).toBe(100200300);
-    expect(
-      JSON.parse(kv.store.get(TICKETS_OPEN_KEY) ?? "[]"),
-    ).toHaveLength(1);
+    expect(msgs).toHaveLength(2);
+    expect(String(msgs[0]?.body.text)).toContain("ثبت شد");
+    expect(msgs[1]?.body.chat_id).toBe(ADMIN_ID);
   });
 
-  it("دکمه «🎫 پشتیبانی و ثبت تیکت» برای کاربر بدون مجوز کار میکند (callback بدون گیت)", async () => {
+  it("دکمه «📝 ثبت تیکت» برای کاربر بدون مجوز کار میکند (callback بدون گیت)", async () => {
     const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const env = makeEnv();
-    await handleTelegramUpdate(callbackUpdate("support_start"), env, {
+    await handleTelegramUpdate(callbackUpdate("tkn"), env, {
       fetchFn,
     });
-    const msgs = sentMessages(calls);
-    expect(msgs).toHaveLength(1);
-    expect(String(msgs[0]?.body.text)).toContain("پشتیبانی و ثبت تیکت");
+    const edits = editedMessages(calls);
+    expect(edits).toHaveLength(1);
+    expect(String(edits[0]?.body.text)).toContain("مرحله ۱");
     // مسیر پشتیبانی هرگز پیام محدودیت/عضویت نشان نمیدهد
-    expect(String(msgs[0]?.body.text)).not.toContain("دسترسی غیرمجاز");
+    expect(String(edits[0]?.body.text)).not.toContain("فعال نیست");
   });
 
   it("callback جعلی با data «price» نمیتواند گیت دسترسی را دور بزند", async () => {
@@ -436,6 +724,7 @@ describe("بازبینی مسیرهای حیاتی — پشتیبانی، قیم
       calls.some((c) => c.url.endsWith("/answerCallbackQuery")),
     ).toBe(true);
     expect(sentMessages(calls)).toHaveLength(0);
+    expect(editedMessages(calls)).toHaveLength(0);
   });
 
   it("callback با data «admin:100200300» هم دور زده نمیشود — نه پیام، نه اجرا", async () => {
@@ -445,6 +734,7 @@ describe("بازبینی مسیرهای حیاتی — پشتیبانی، قیم
       fetchFn,
     });
     expect(sentMessages(calls)).toHaveLength(0);
+    expect(editedMessages(calls)).toHaveLength(0);
   });
 
   it("خطای getChatMember در callback → «بررسی ممکن نیست» — نه عضویت، نه محدودیت", async () => {
@@ -452,38 +742,13 @@ describe("بازبینی مسیرهای حیاتی — پشتیبانی، قیم
       memberError: "Bad Request: user not found",
     });
     const env = makeEnv();
-    await handleTelegramUpdate(callbackUpdate("check_membership"), env, {
+    await handleTelegramUpdate(callbackUpdate("rc"), env, {
       fetchFn,
     });
-    const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("امکان بررسی عضویت");
-    expect(String(msgs[0]?.body.text)).not.toContain("دسترسی غیرمجاز");
-    expect(String(msgs[0]?.body.text)).not.toContain("برای استفاده از امکانات");
-  });
-
-  it("پیام عضویت بدون لینک، به دکمه عضویتِ غایب ارجاع نمیدهد (رفتار مشخص، بدون بنبست)", async () => {
-    const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
-    const env = makeEnv(); // کانال خصوصی + CHANNEL_LINK خالی
-    await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
-    const msgs = sentMessages(calls);
-    // متن مسیر ادامه دارد: «بررسی عضویت» هنوز توصیه میشود
-    expect(String(msgs[0]?.body.text)).toContain("✅ بررسی عضویت");
-    expect(String(msgs[0]?.body.text)).not.toContain("۱) روی دکمه");
-    const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
-    expect(markup.inline_keyboard).toHaveLength(1);
-    expect(markup.inline_keyboard[0][0].callback_data).toBe(
-      "check_membership",
-    );
-  });
-
-  it("پیام عضویت با لینک، دستور دکمه عضویت را دارد", async () => {
-    const { calls, fetchFn } = telegramRecorder({ memberStatus: "left" });
-    const env = makeEnv({ CHANNEL_ID: "@my_market_channel" });
-    await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
-    const msgs = sentMessages(calls);
-    expect(String(msgs[0]?.body.text)).toContain("۱) روی دکمه");
-    const markup = JSON.parse(String(msgs[0]?.body.reply_markup));
-    expect(markup.inline_keyboard).toHaveLength(2);
+    const edits = editedMessages(calls);
+    expect(String(edits[0]?.body.text)).toContain("نمیتوان عضویت شما را بررسی کرد");
+    expect(String(edits[0]?.body.text)).not.toContain("فعال نیست");
+    expect(String(edits[0]?.body.text)).not.toContain("عضو کانال شوید");
   });
 });
 
@@ -501,18 +766,30 @@ describe("اعتبارسنجی ساختار callback و دستورهای آرگ�
           id: "1",
           from: { id: "fake-string-id" },
           message: { chat: { id: 123 } },
-          data: "check_membership",
+          data: "rc",
+        },
+      }),
+    ).toBeNull();
+    // بدون message_id قابل اعتماد → null (برای ویرایش امن همان پیام)
+    expect(
+      extractCallbackQuery({
+        callback_query: {
+          id: "1",
+          from: { id: 5 },
+          message: { chat: { id: 5 }, message_id: "not-number" },
+          data: "rc",
         },
       }),
     ).toBeNull();
   });
 
-  it("callback معتبر → اطلاعات با from.id سمت سرور", () => {
-    const info = extractCallbackQuery(callbackUpdate("check_membership"));
+  it("callback معتبر → اطلاعات با from.id و message_id سمت سرور", () => {
+    const info = extractCallbackQuery(callbackUpdate("rc"));
     expect(info).not.toBeNull();
     expect(info?.fromId).toBe(USER_ID);
     expect(info?.chatId).toBe(USER_ID);
-    expect(info?.data).toBe("check_membership");
+    expect(info?.messageId).toBe(30);
+    expect(info?.data).toBe("rc");
   });
 
   it("parseCommandInput — دستور ساده و آرگومندار", () => {

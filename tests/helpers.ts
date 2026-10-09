@@ -51,11 +51,14 @@ export function alwaysUnknownMarketHours(): MarketHoursConfig {
 
 export class MockKV implements KVLike {
   readonly store = new Map<string, string>();
+  /** فراخوانیهای put (key, options) — برای assert روی TTL */
+  readonly putCalls: Array<{ key: string; options?: unknown }> = [];
   async get(key: string): Promise<string | null> {
     return this.store.get(key) ?? null;
   }
-  async put(key: string, value: string): Promise<void> {
+  async put(key: string, value: string, options?: unknown): Promise<void> {
     this.store.set(key, value);
+    this.putCalls.push({ key, options });
   }
   async delete(key: string): Promise<void> {
     this.store.delete(key);
@@ -168,6 +171,27 @@ export function callbackUpdate(
   };
 }
 
+/** update پیام با message_id قابل‌تنظیم (برای جریانهای مکالمه) */
+export function textUpdate(
+  text: string,
+  fromId = 999111222,
+  chatId = fromId,
+  messageId = 40,
+  isEdit = false,
+) {
+  const message = {
+    message_id: messageId,
+    from: { id: fromId, is_bot: false, first_name: "User" },
+    chat: { id: chatId, type: "private" },
+    date: 1_700_000_000,
+    text,
+  };
+  return {
+    update_id: 9,
+    ...(isEdit ? { edited_message: message } : { message }),
+  };
+}
+
 export interface RecorderOptions {
   /** وضعیت عضویت که getChatMember برمی‌گرداند (پیشفرض "member") */
   memberStatus?: string;
@@ -224,6 +248,22 @@ export function sentMessages(
   calls: Array<{ url: string; body: Record<string, unknown> }>,
 ): Array<{ url: string; body: Record<string, unknown> }> {
   return calls.filter((c) => c.url.endsWith("/sendMessage"));
+}
+
+/** فراخوانیها فقط با متد editMessageText (ناوبری منو در همان پیام) */
+export function editedMessages(
+  calls: Array<{ url: string; body: Record<string, unknown> }>,
+): Array<{ url: string; body: Record<string, unknown> }> {
+  return calls.filter((c) => c.url.endsWith("/editMessageText"));
+}
+
+/** متن همه پیامهای ارسالی+ویرایشی (برای جستجوی محتوا) */
+export function allTexts(
+  calls: Array<{ url: string; body: Record<string, unknown> }>,
+): string[] {
+  return [...sentMessages(calls), ...editedMessages(calls)].map(
+    (c) => String(c.body.text ?? ""),
+  );
 }
 
 export function fakeUsdPrice(

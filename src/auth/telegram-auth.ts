@@ -12,6 +12,8 @@ export interface TelegramMessageInfo {
   text: string;
   chatId: number;
   fromId: number;
+  /** پیام ویرایش‌شده است (edited_message) — برای جریان‌های ورودی متنی نادیده گرفته می‌شود */
+  isEdit: boolean;
 }
 
 /** callback_query اعتبارسنجی‌شده — شناسه کاربر فقط سمت سرور */
@@ -22,7 +24,9 @@ export interface TelegramCallbackInfo {
   fromId: number;
   /** چتی که پیام دکمه در آن است — مقصد پاسخ */
   chatId: number;
-  /** نوع اقدام — فقط از whitelist محدود (بدون شناسه جاسازی‌شده) */
+  /** پیام حاوی دکمه — برای editMessageText در همان پیام (چت شلوغ نشود) */
+  messageId: number;
+  /** payload دکمه — فقط از whitelist محدود (بدون شناسه جاسازی‌شده) */
   data: string;
 }
 
@@ -35,6 +39,8 @@ export function extractUpdateMessage(
   update: unknown,
 ): TelegramMessageInfo | null {
   if (!isRecord(update)) return null;
+  const isEdit =
+    update.message === undefined && update.edited_message !== undefined;
   const message = update.message ?? update.edited_message;
   if (!isRecord(message)) return null;
   const { text, chat, from } = message as Record<string, unknown>;
@@ -46,7 +52,7 @@ export function extractUpdateMessage(
   if (typeof chatId !== "number" || typeof fromId !== "number") return null;
   if (!Number.isSafeInteger(chatId) || !Number.isSafeInteger(fromId))
     return null;
-  return { text: text.trim(), chatId, fromId };
+  return { text: text.trim(), chatId, fromId, isEdit };
 }
 
 /** حداکثر طول data در callback (حد تلگرام ۶۴ بایت است) */
@@ -74,12 +80,19 @@ export function extractCallbackQuery(
   if (typeof fromId !== "number" || !Number.isSafeInteger(fromId))
     return null;
 
-  // پیام حاوی دکمه — چت آن مقصد پاسخ است
+  // پیام حاوی دکمه — چت آن مقصد پاسخ است؛ message_id آن برای ویرایش همان پیام
   if (!isRecord(message)) return null;
   const chat = (message as Record<string, unknown>).chat;
   if (!isRecord(chat)) return null;
   const chatId = (chat as Record<string, unknown>).id;
   if (typeof chatId !== "number" || !Number.isSafeInteger(chatId))
+    return null;
+  const messageId = (message as Record<string, unknown>).message_id;
+  if (
+    typeof messageId !== "number" ||
+    !Number.isSafeInteger(messageId) ||
+    messageId <= 0
+  )
     return null;
 
   if (
@@ -89,7 +102,7 @@ export function extractCallbackQuery(
   )
     return null;
 
-  return { id, fromId, chatId, data };
+  return { id, fromId, chatId, messageId, data };
 }
 
 /** فقط فرستندهای با user id دقیقاً برابر ADMIN_USER_ID ادمین است */
