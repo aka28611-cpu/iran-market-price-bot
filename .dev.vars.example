@@ -13,3 +13,8 @@ PRICE_API_KEY=
 PRICE_PROVIDER=stub
 # برای jahankhahan: https://nerkh.jahankhahan.shop/data/live.json
 PRICE_API_BASE_URL=
+# لینک عمومی کانال برای دکمه «عضویت» (اختیاری — فقط https://t.me/...)
+# اگر خالی و CHANNEL_ID=@username باشد، لینک از خود username ساخته می‌شود
+CHANNEL_LINK=
+# لینک خارجی پشتیبانی (اختیاری) — خالی = سیستم تیکت داخلی ربات
+SUPPORT_LINK=

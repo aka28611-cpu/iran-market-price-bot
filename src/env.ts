@@ -23,6 +23,10 @@ export interface Env {
   // --- Vars (غیر حساس) ---
   PRICE_PROVIDER: string;
   PRICE_API_BASE_URL: string;
+  /** لینک عمومی کانال (https://t.me/...) — اختیاری؛ برای دکمه «عضویت» */
+  CHANNEL_LINK: string;
+  /** لینک خارجی پشتیبانی — اختیاری؛ غایب = سیستم تیکت داخلی ربات */
+  SUPPORT_LINK: string;
   // --- Bindings ---
   STATE: KVLike;
 }
@@ -81,6 +85,23 @@ export function parseEnv(raw: unknown): Env {
   const PRICE_PROVIDER = str("PRICE_PROVIDER") || "stub";
   const PRICE_API_BASE_URL = str("PRICE_API_BASE_URL");
 
+  // --- لینکهای عمومی (اختیاری، فقط https://t.me/...) ---
+  // اینها فقط «UI دکمهها»اند نه Secret؛ نامعتبر = غایب در نظر گرفته می‌شود
+  // (دکمه حذف می‌شود — هرگز URL ساختگی جایگزین نمی‌شود)
+  const TELEGRAM_LINK_RE = /^https:\/\/t\.me\/[A-Za-z0-9_+\/-]{2,64}$/;
+  const normalizeLink = (key: string): string => {
+    const raw = str(key);
+    if (!raw) return "";
+    const trimmed = raw.replace(/\/+$/, "");
+    if (!TELEGRAM_LINK_RE.test(trimmed)) {
+      // نامعتبر → دکمه حذف می‌شود (fail-closed برای UI، بدون ازکارافتادن ربات)
+      return "";
+    }
+    return trimmed;
+  };
+  const CHANNEL_LINK = normalizeLink("CHANNEL_LINK");
+  const SUPPORT_LINK = normalizeLink("SUPPORT_LINK");
+
   const STATE = record["STATE"] as KVLike | undefined;
   if (
     !STATE ||
@@ -103,6 +124,8 @@ export function parseEnv(raw: unknown): Env {
     PRICE_API_KEY,
     PRICE_PROVIDER,
     PRICE_API_BASE_URL,
+    CHANNEL_LINK,
+    SUPPORT_LINK,
     STATE: STATE as KVLike,
   };
 }

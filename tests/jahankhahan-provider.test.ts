@@ -288,6 +288,7 @@ describe("parseJahankhahanPayload — پاسخ نامعتبر → null (fail-clo
     ["null", null],
     ["آرایه", [SAMPLE]],
     ["بدون date/time", { rates: SAMPLE.rates }],
+    ["time خالی (یافته زنده منبع — پنجشنبه ۱۴۰۵/۰۷/۱۷)", { ...SAMPLE, time: "" }],
     ["date میلادی بهجای شمسی", { ...SAMPLE, date: "2026-10-08" }],
     ["بدون rates", { date: "1405/07/16", time: "14:41" }],
     ["rates آرایه", { ...SAMPLE, rates: [1, 2, 3] }],

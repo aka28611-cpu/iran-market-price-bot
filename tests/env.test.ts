@@ -68,3 +68,40 @@ describe("parseEnv — fail-closed", () => {
     }
   });
 });
+
+describe("parseEnv — لینکهای عمومی اختیاری (CHANNEL_LINK / SUPPORT_LINK)", () => {
+  it("غایب → رشته خالی (دکمه حذف میشود)", () => {
+    const parsed = parseEnv(makeRawEnv());
+    expect(parsed.CHANNEL_LINK).toBe("");
+    expect(parsed.SUPPORT_LINK).toBe("");
+  });
+
+  it("لینک معتبر t.me نگه داشته میشود؛ اسلش انتهایی حذف میشود", () => {
+    const parsed = parseEnv(
+      makeRawEnv({
+        CHANNEL_LINK: "https://t.me/my_market_channel/",
+        SUPPORT_LINK: "https://t.me/support_bot",
+      }),
+    );
+    expect(parsed.CHANNEL_LINK).toBe("https://t.me/my_market_channel");
+    expect(parsed.SUPPORT_LINK).toBe("https://t.me/support_bot");
+  });
+
+  it("لینک نامعتبر → رشته خالی — هرگز URL ساختگی/خارجی جایگزین نمیشود", () => {
+    const parsed = parseEnv(
+      makeRawEnv({
+        CHANNEL_LINK: "http://evil.example.com/channel",
+        SUPPORT_LINK: "javascript:alert(1)",
+      }),
+    );
+    expect(parsed.CHANNEL_LINK).toBe("");
+    expect(parsed.SUPPORT_LINK).toBe("");
+  });
+
+  it("نامعتبر بودن لینک ربات را از کار نمی‌اندازد (env معتبر میماند)", () => {
+    const parsed = parseEnv(
+      makeRawEnv({ CHANNEL_LINK: "not a url" }),
+    );
+    expect(parsed.PRICE_PROVIDER).toBe("stub");
+  });
+});

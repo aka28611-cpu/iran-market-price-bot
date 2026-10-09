@@ -14,6 +14,8 @@ export interface TelegramDeps {
 export interface TelegramResult {
   ok: boolean;
   messageId?: number;
+  /** وضعیت عضویت خام از getChatMember (فقط برای آن متد) */
+  memberStatus?: string;
   /** کد کوتاه خطا: TIMEOUT | NETWORK | HTTP_xxx | توضیح سرویس */
   error?: string;
   /** خطای بی‌خطر (مثل message is not modified) */
@@ -63,7 +65,12 @@ export class TelegramClient {
           result && typeof result.message_id === "number"
             ? result.message_id
             : undefined;
-        return { ok: true, messageId };
+        // وضعیت عضویت (خروجی getChatMember) — فقط اگر رشته معتبر باشد
+        const memberStatus =
+          result && typeof result.status === "string" && result.status.length > 0
+            ? result.status
+            : undefined;
+        return { ok: true, messageId, memberStatus };
       }
       if (
         typeof data.description === "string" &&
@@ -80,11 +87,18 @@ export class TelegramClient {
     }
   }
 
+  /** گزینه‌های ارسال پیام — replyMarkup خام (InlineKeyboardMarkup) */
   sendMessage(
     chatId: string | number,
     text: string,
+    options: { replyMarkup?: unknown } = {},
   ): Promise<TelegramResult> {
-    return this.call("sendMessage", { chat_id: chatId, text });
+    const payload: Record<string, unknown> = { chat_id: chatId, text };
+    if (options.replyMarkup !== undefined) {
+      // JSON serialization دقیقاً مطابق Bot API (reply_markup رشته JSON است)
+      payload.reply_markup = JSON.stringify(options.replyMarkup);
+    }
+    return this.call("sendMessage", payload);
   }
 
   editMessageText(
@@ -96,6 +110,24 @@ export class TelegramClient {
       chat_id: chatId,
       message_id: messageId,
       text,
+    });
+  }
+
+  /**
+   * وضعیت عضویت یک کاربر در چت/کانال — server-side.
+   * نتیجه ok:false هرگز «عدم عضویت» نیست؛ تفسیر سه‌حالته با auth/access.ts است.
+   */
+  getChatMember(
+    chatId: string | number,
+    userId: number,
+  ): Promise<TelegramResult> {
+    return this.call("getChatMember", { chat_id: chatId, user_id: userId });
+  }
+
+  /** پاسخ به callback query — برای توقف نشانگر بارگذاری تلگرام */
+  answerCallbackQuery(callbackQueryId: string): Promise<TelegramResult> {
+    return this.call("answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
     });
   }
 }

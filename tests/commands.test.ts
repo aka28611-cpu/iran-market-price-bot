@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetRateLimiterForTests } from "../src/ratelimit";
-import { PAUSED_FLAG_KEY } from "../src/state";
+import { ALLOW_LIST_KEY, PAUSED_FLAG_KEY, TICKETS_OPEN_KEY } from "../src/state";
 import { handleTelegramUpdate } from "../src/telegram/commands";
 import {
   adminUpdate,
@@ -9,7 +9,9 @@ import {
   fakeUsdPrice,
   makeEnv,
   MockKV,
+  sentMessages,
   telegramRecorder,
+  userUpdate,
 } from "./helpers";
 
 describe("دستورات ادمین — authorization و مقصد پیام", () => {
@@ -17,13 +19,16 @@ describe("دستورات ادمین — authorization و مقصد پیام", () 
     resetRateLimiterForTests();
   });
 
-  it("فرستنده غیرادمین کاملاً بی‌پاسخ است (fail-closed)", async () => {
-    const { calls, fetchFn } = telegramRecorder();
+  it("فرستنده غیرادمین دستور مدیریتی نمی‌گیرد — پیام محدودیت بدون داده", async () => {
+    const { calls, fetchFn } = telegramRecorder({ memberStatus: "member" });
     const env = makeEnv();
-    await handleTelegramUpdate(adminUpdate("/start", 999, 999), env, {
-      fetchFn,
-    });
-    expect(calls).toHaveLength(0);
+    await handleTelegramUpdate(userUpdate("/start"), env, { fetchFn });
+    const msgs = sentMessages(calls);
+    expect(msgs).toHaveLength(1);
+    // هیچ داده مدیریتی/قیمتی افشا نمیشود — فقط پیام محدودیت
+    expect(String(msgs[0]?.body.chat_id)).toBe("999111222");
+    expect(String(msgs[0]?.body.text)).not.toContain("/pause");
+    expect(String(msgs[0]?.body.text)).not.toContain("/update");
   });
 
   it("/start فهرست دستورات را به چت ادمینِ احرازشده می‌فرستد", async () => {
@@ -127,5 +132,160 @@ describe("دستورات ادمین — authorization و مقصد پیام", () 
     // سقف ۲۰ در دقیقه — عده‌ای بی‌پاسخ می‌مانند
     expect(calls.length).toBeLessThan(25);
     expect(calls.length).toBeGreaterThanOrEqual(20);
+  });
+});
+
+describe("مدیریت دسترسی و تیکت — دستورات ادمین", () => {
+  beforeEach(() => {
+    resetRateLimiterForTests();
+  });
+
+  it("/allow کاربر را به فهرست مجاز اضافه و /users نمایش میدهد", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await handleTelegramUpdate(adminUpdate("/allow 999111222"), env, { fetchFn });
+    const stored = JSON.parse(kv.store.get(ALLOW_LIST_KEY) ?? "[]");
+    expect(stored).toContain(999111222);
+    await handleTelegramUpdate(adminUpdate("/users"), env, { fetchFn });
+    const msgs = sentMessages(calls);
+    expect(String(msgs.at(-1)?.body.text)).toContain("999111222");
+  });
+
+  it("/allow تکراری و /allow ادمین رد میشوند", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await handleTelegramUpdate(adminUpdate("/allow 999111222"), env, { fetchFn });
+    await handleTelegramUpdate(adminUpdate("/allow 999111222"), env, { fetchFn });
+    await handleTelegramUpdate(adminUpdate("/allow 100200300"), env, { fetchFn });
+    const msgs = sentMessages(calls);
+    expect(String(msgs[1]?.body.text)).toContain("از قبل");
+    expect(String(msgs[2]?.body.text)).toContain("ادمین");
+    expect(JSON.parse(kv.store.get(ALLOW_LIST_KEY) ?? "[]")).toEqual([
+      999111222,
+    ]);
+  });
+
+  it("/allow با ورودی نامعتبر پیام راهنما میدهد", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const env = makeEnv();
+    await handleTelegramUpdate(adminUpdate("/allow abc"), env, { fetchFn });
+    const msgs = sentMessages(calls);
+    expect(String(msgs[0]?.body.text)).toContain("نامعتبر");
+  });
+
+  it("/revoke دسترسی کاربر را حذف میکند", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    await handleTelegramUpdate(adminUpdate("/allow 999111222"), env, { fetchFn });
+    await handleTelegramUpdate(adminUpdate("/revoke 999111222"), env, { fetchFn });
+    expect(JSON.parse(kv.store.get(ALLOW_LIST_KEY) ?? "[]")).toEqual([]);
+  });
+
+  it("دستورات مدیریتی برای کاربر عادی بی‌پاسخ است (حفظ fail-closed)", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const env = makeEnv();
+    await handleTelegramUpdate(userUpdate("/allow 999111222"), env, { fetchFn });
+    await handleTelegramUpdate(userUpdate("/revoke 999111222"), env, { fetchFn });
+    await handleTelegramUpdate(userUpdate("/users"), env, { fetchFn });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("ادمین با Allowlist خالی همه دستورات مدیریتی را اجرا میکند", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV(); // Allowlist خالی — نباید هیچ دستوری مسدود شود
+    const env = makeEnv({ STATE: kv });
+    const adminCommands = [
+      "/start",
+      "/status",
+      "/price",
+      "/update",
+      "/users",
+      "/tickets",
+      "/pause",
+      "/resume",
+      "/test",
+      "/allow 999111222",
+      "/revoke 999111222",
+      "/ticket_close 1",
+    ];
+    for (const cmd of adminCommands) {
+      const before = sentMessages(calls).length;
+      await handleTelegramUpdate(adminUpdate(cmd), env, { fetchFn });
+      // هر دستور مدیریتی پاسخی تولید میکند — هیچی مسدود نیست
+      expect(
+        sentMessages(calls).length,
+        `دستور ${cmd} نباید مسدود شود`,
+      ).toBeGreaterThan(before);
+    }
+  });
+
+  it("/status ادمین تنظیمات ناقص (بدون لینک کانال/پشتیبانی) را اعلام میکند", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const env = makeEnv(); // کانال خصوصی + CHANNEL_LINK/SUPPORT_LINK خالی
+    await handleTelegramUpdate(adminUpdate("/status"), env, { fetchFn });
+    const text = String(sentMessages(calls)[0]?.body.text);
+    expect(text).toContain("لینک عمومی کانال پیکربندی نشده");
+    expect(text).toContain("SUPPORT_LINK خالی");
+  });
+
+  it("/status با کانال عمومی @username هشدار لینک نمیدهد", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const env = makeEnv({ CHANNEL_ID: "@my_market_channel" });
+    await handleTelegramUpdate(adminUpdate("/status"), env, { fetchFn });
+    const text = String(sentMessages(calls)[0]?.body.text);
+    expect(text).not.toContain("لینک عمومی کانال پیکربندی نشده");
+  });
+
+  it("جریان کامل تیکت: ثبت کاربر → اطلاع ادمین → /tickets → بستن → اطلاع کاربر", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+
+    // کاربر (بدون عضویت) تیکت میسازد — مسیر فرار پشتیبانی
+    await handleTelegramUpdate(
+      userUpdate("/ticket لطفاً دسترسی ربات را فعال کنید"),
+      env,
+      { fetchFn },
+    );
+    const stored = JSON.parse(kv.store.get(TICKETS_OPEN_KEY) ?? "[]");
+    expect(stored).toHaveLength(1);
+    expect(stored[0].userId).toBe(999111222);
+
+    // اطلاع ادمین ارسال شده است
+    const notify = sentMessages(calls).find(
+      (m) => m.body.chat_id === 100200300,
+    );
+    expect(notify).toBeDefined();
+    expect(String(notify?.body.text)).toContain("تیکت جدید #1");
+
+    // ادمین فهرست را میبیند
+    await handleTelegramUpdate(adminUpdate("/tickets"), env, { fetchFn });
+    const listMsg = sentMessages(calls).find((m) =>
+      String(m.body.text).includes("تیکت‌های باز"),
+    );
+    expect(String(listMsg?.body.text)).toContain("999111222");
+
+    // بستن + اطلاع کاربر
+    await handleTelegramUpdate(adminUpdate("/ticket_close 1"), env, {
+      fetchFn,
+    });
+    expect(JSON.parse(kv.store.get(TICKETS_OPEN_KEY) ?? "[]")).toEqual([]);
+    const closeMsgs = sentMessages(calls).filter((m) =>
+      String(m.body.text).includes("بسته شد"),
+    );
+    expect(closeMsgs.length).toBeGreaterThanOrEqual(2); // کاربر + ادمین
+  });
+
+  it("/ticket_close با شماره ناموجود خطای مشخص میدهد", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const env = makeEnv();
+    await handleTelegramUpdate(adminUpdate("/ticket_close 99"), env, {
+      fetchFn,
+    });
+    const msgs = sentMessages(calls);
+    expect(String(msgs[0]?.body.text)).toContain("پیدا نشد");
   });
 });

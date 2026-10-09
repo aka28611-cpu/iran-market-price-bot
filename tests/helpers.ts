@@ -74,6 +74,8 @@ export function makeRawEnv(
     PRICE_PROVIDER: "stub",
     PRICE_API_BASE_URL: "",
     PRICE_API_KEY: "",
+    CHANNEL_LINK: "",
+    SUPPORT_LINK: "",
     STATE: new MockKV(),
     ...overrides,
   };
@@ -89,6 +91,8 @@ export function makeEnv(overrides: Partial<Env> = {}): Env {
     PRICE_PROVIDER: "stub",
     PRICE_API_BASE_URL: "",
     PRICE_API_KEY: "",
+    CHANNEL_LINK: "",
+    SUPPORT_LINK: "",
     STATE: new MockKV(),
     ...overrides,
   };
@@ -124,12 +128,87 @@ export function adminUpdate(
   };
 }
 
+/** ساخت update پیام کاربر غیرادمین (چت خصوصی) */
+export function userUpdate(
+  text: string,
+  fromId = 999111222,
+  chatId = fromId,
+) {
+  return {
+    update_id: 2,
+    message: {
+      message_id: 20,
+      from: { id: fromId, is_bot: false, first_name: "User" },
+      chat: { id: chatId, type: "private" },
+      date: 1_700_000_000,
+      text,
+    },
+  };
+}
+
+/** ساخت update دکمه callback (چت خصوصی) */
+export function callbackUpdate(
+  data: string,
+  fromId = 999111222,
+  chatId = fromId,
+) {
+  return {
+    update_id: 3,
+    callback_query: {
+      id: "callback-query-1",
+      from: { id: fromId, is_bot: false, first_name: "User" },
+      message: {
+        message_id: 30,
+        chat: { id: chatId, type: "private" },
+        date: 1_700_000_000,
+        text: "buttons",
+      },
+      data,
+    },
+  };
+}
+
+export interface RecorderOptions {
+  /** وضعیت عضویت که getChatMember برمی‌گرداند (پیشفرض "member") */
+  memberStatus?: string;
+  /** خطای API برای getChatMember (≠ عدم عضویت) */
+  memberError?: string;
+}
+
 /** fetch فیک تلگرام — همه فراخوانیها را برای assertion ثبت می‌کند */
-export function telegramRecorder() {
-  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+export function telegramRecorder(options: RecorderOptions = {}) {
+  const calls: Array<{
+    url: string;
+    body: Record<string, unknown>;
+  }> = [];
   const fetchFn = (async (url: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof init?.body === "string" ? init.body : "";
     calls.push({ url: String(url), body: raw ? JSON.parse(raw) : {} });
+    const method = String(url).split("/").pop() ?? "";
+    if (method === "getChatMember") {
+      if (options.memberError) {
+        return new Response(
+          JSON.stringify({ ok: false, description: options.memberError }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          result: { status: options.memberStatus ?? "member" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (method === "answerCallbackQuery") {
+      return new Response(JSON.stringify({ ok: true, result: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     const isEdit = String(url).includes("editMessageText");
     const payload = { ok: true, result: isEdit ? true : { message_id: 100 } };
     return new Response(JSON.stringify(payload), {
@@ -138,6 +217,13 @@ export function telegramRecorder() {
     });
   }) as typeof fetch;
   return { calls, fetchFn };
+}
+
+/** فراخوانیها فقط با متد sendMessage */
+export function sentMessages(
+  calls: Array<{ url: string; body: Record<string, unknown> }>,
+): Array<{ url: string; body: Record<string, unknown> }> {
+  return calls.filter((c) => c.url.endsWith("/sendMessage"));
 }
 
 export function fakeUsdPrice(

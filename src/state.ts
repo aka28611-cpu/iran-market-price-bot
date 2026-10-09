@@ -14,6 +14,16 @@ export const LAST_REPORT_KEY = "price:report:last";
 export const USD_STATUS_KEY = "status:usd";
 export const REPORT_STATUS_KEY = "status:report";
 
+// --- کلیدهای جریان دسترسی/عضویت/تیکت ---
+/** فهرست JSON شناسه کاربران مجاز (آرایه عددی) */
+export const ALLOW_LIST_KEY = "allow:list";
+/** آرایه JSON تیکتهای باز */
+export const TICKETS_OPEN_KEY = "tickets:open";
+/** شمارنده عددی تیکت */
+export const TICKETS_COUNT_KEY = "tickets:count";
+/** پیشوند تاریخچه تیکت بسته‌شده هر کاربر: tickets:closed:<userId> */
+export const TICKETS_CLOSED_PREFIX = "tickets:closed:";
+
 export interface RunStatus {
   /** ISO زمان اجرا */
   at: string;
@@ -100,4 +110,31 @@ export async function readLastReport(
   kv: KVLike,
 ): Promise<MarketReport | null> {
   return readJson<MarketReport>(kv, LAST_REPORT_KEY);
+}
+
+// ---------- Allowlist کاربران مجاز ----------
+
+/** سقف تعداد کاربران مجاز (بازه نوشتن‌های read-modify-write را مهار می‌کند) */
+export const ALLOW_LIST_MAX = 1_000;
+
+function sanitizeAllowedUsers(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (id): id is number =>
+      typeof id === "number" && Number.isSafeInteger(id) && id > 0,
+  );
+}
+
+export async function readAllowedUsers(kv: KVLike): Promise<number[]> {
+  const parsed = await readJson<unknown>(kv, ALLOW_LIST_KEY);
+  return sanitizeAllowedUsers(parsed);
+}
+
+export async function writeAllowedUsers(
+  kv: KVLike,
+  users: number[],
+): Promise<void> {
+  // مقادیر تکراری حذف میشود — یک کاربر فقط یکبار در فهرست است
+  const unique = Array.from(new Set(users));
+  await writeJson(kv, ALLOW_LIST_KEY, unique);
 }
