@@ -25,8 +25,10 @@ PRICE_API_BASE_URL = "https://nerkh.jahankhahan.shop/data/live.json"
 crons = ["* * * * *", "0 */6 * * *"]
 
 # KV برای وضعیت ربات (message_id پیام ثابت، فلگ pause، آخرین قیمت‌ها، وضعیت اجرا)
-# round 15: namespace تازه — binding قبلی (50467c20…) در runtime نوشتنهای worker را
-# بیصدا میبلعید (routing خراب سمت پلتفرم)؛ این namespace در 2026-10-09 ساخته شد.
+# round 15: namespace تازه 6d13a5b3… (سالم و بدون state قدیمی).
+# نکتهٔ ابزار: خواندن/نوشتن KV با wrangler بهصورت پیشفرض LOCAL است — برای دیدن
+# state واقعی production حتماً --remote بدهید (در تشخیص این مرحله باگ ابزار بود،
+# نه خرابی binding). دادهٔ واقعی کاربر (تیکت #۱) به این namespace منتقل شد.
 [[kv_namespaces]]
 binding = "STATE"
 id = "6d13a5b30bd049de899edd602f3e3699"
