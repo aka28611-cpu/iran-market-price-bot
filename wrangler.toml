@@ -25,9 +25,11 @@ PRICE_API_BASE_URL = "https://nerkh.jahankhahan.shop/data/live.json"
 crons = ["* * * * *", "0 */6 * * *"]
 
 # KV برای وضعیت ربات (message_id پیام ثابت، فلگ pause، آخرین قیمت‌ها، وضعیت اجرا)
+# round 15: namespace تازه — binding قبلی (50467c20…) در runtime نوشتنهای worker را
+# بیصدا میبلعید (routing خراب سمت پلتفرم)؛ این namespace در 2026-10-09 ساخته شد.
 [[kv_namespaces]]
 binding = "STATE"
-id = "50467c20b70a4c0e955e35b31c8c3c72"
+id = "6d13a5b30bd049de899edd602f3e3699"
 
 [observability]
 enabled = true
