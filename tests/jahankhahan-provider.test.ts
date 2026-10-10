@@ -349,10 +349,48 @@ describe("JahankhahanProvider — fetchMarketReport", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(LIVE_URL);
     expect(calls[0]?.init?.method).toBe("GET");
-    expect(calls[0]?.init?.redirect).toBe("error");
+    // workerd فقط "follow"/"manual" را میپذیرد — "error" TypeError میدهد
+    // (علت قطعی قطع پایپلاین قیمت در production؛ رگرسیون ۲۰۲۶-۱۰)
+    expect(calls[0]?.init?.redirect).toBe("manual");
     expect(calls[0]?.init?.cache).toBe("no-store");
     const headers = calls[0]?.init?.headers as Record<string, string>;
     expect(headers["accept"]).toBe("application/json");
+  });
+
+  it("سازگاری init با رانتایم workerd — شبیهسازی اعتبارسنجی واقعی Cloudflare Workers (رگرسیون production ۲۰۲۶-۱۰)", async () => {
+    // در production مقدار redirect: "error" بیدرنگ TypeError میداد:
+    // «Invalid redirect value, must be one of "follow" or "manual"»
+    // — کل پایپلاین قیمت از همین نقطه قطع شده بود (status:usd = no-data).
+    // این تست همان اعتبارسنجی workerd را شبیهسازی میکند تا هرگز تکرار نشود.
+    const calls: RecordedCall[] = [];
+    const { fetchFn } = recordingFetch(jsonResponse(SAMPLE), calls);
+    const workerdLikeFetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const redirect = init?.redirect;
+      if (
+        redirect !== undefined &&
+        redirect !== "follow" &&
+        redirect !== "manual"
+      ) {
+        throw new TypeError(
+          'Invalid redirect value, must be one of "follow" or "manual"',
+        );
+      }
+      return fetchFn(input, init);
+    }) as typeof fetch;
+    const provider = new JahankhahanProvider({
+      baseUrl: LIVE_URL,
+      fetchFn: workerdLikeFetch,
+      now: () => FIXED_NOW,
+    });
+    // با init معتبرِ workerd، fetch باید انجام و گزارش برگردد — نه null
+    const report = await provider.fetchMarketReport();
+    expect(report).not.toBeNull();
+    expect(report?.items.length).toBeGreaterThan(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.init?.redirect).toBe("manual");
   });
 
   it("هر آیتم مهر زمانی داده (نه زمان fetch) دارد", async () => {

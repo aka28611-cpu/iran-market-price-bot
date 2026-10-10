@@ -23,8 +23,12 @@ import type { PriceProvider } from "./provider";
  *  • خطا: هر وضعیت غیر از ۲۰۰ JSON معتبر = null (fail-closed)
  *
  * تصمیمهای امنیتی:
- *  • redirect: "error" — هرگز redirect دنبال نمی‌شود (درس ارزیابی navasan.net:
- *    دنبال کردن redirect میتواند HTML صفحه اصلی را جای JSON تحویل دهد)
+ *  • redirect: "manual" — هرگز redirect دنبال نمی‌شود (درس ارزیابی navasan.net:
+ *    دنبال کردن redirect میتواند HTML صفحه اصلی را جای JSON تحویل دهد).
+ *    نکتهٔ رانتایم (رگرسیون production ۲۰۲۶-۱۰): workerd فقط "follow"/"manual"
+ *    را میپذیرد؛ "error" در Cloudflare Workers بیدرنگ TypeError میدهد و کل
+ *    دریافت داده را قطع میکرد. با "manual" پاسخ 3x دنبال نمی‌شود و همان
+ *    بررسی !response.ok آن را رد میکند (رفتار fail-closed حفظ شده است)
  *  • cache: "no-store" — سرور cache-control ندارد؛ کش heuristic ممنوع است
  *    (ETag بر اساس mtime است و با محتوای یکسان هم عوض میشود — قابل اتکا نیست)
  *  • URL کامل از env میآید (PRICE_API_BASE_URL) — هیچ endpointی hard-code نمیشود
@@ -346,7 +350,10 @@ export class JahankhahanProvider implements PriceProvider {
       response = await this.fetchFn(this.baseUrl.toString(), {
         method: "GET",
         headers: { accept: "application/json" },
-        redirect: "error",
+        // workerd فقط follow/manual را میپذیرد؛ "error" TypeError میدهد
+        // (علت قطعی عدم انتشار قیمتها در production). با "manual"
+        // redirect دنبال نمیشود و 3x توسط !response.ok رد میشود.
+        redirect: "manual",
         cache: "no-store",
         signal: controller.signal,
       });
