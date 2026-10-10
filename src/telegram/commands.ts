@@ -261,6 +261,16 @@ async function handleCallback(
     }
 
     case "prices": {
+      // ادمین از گات عضویت/مجوز مستثنی است — خطای بررسی عضویت
+      // نباید ادمین اصلی را قفل کند (مثل home/recheck)
+      if (isAdmin) {
+        await renderView(
+          tg,
+          target,
+          pricesView(await buildUserPriceText(env, deps)),
+        );
+        return;
+      }
       const allowed = await gateUser(tg, env, callback.fromId, target, deps);
       if (allowed) {
         await renderView(tg, target, pricesView(await buildUserPriceText(env, deps)));
@@ -269,12 +279,15 @@ async function handleCallback(
     }
 
     case "status": {
+      // ادمین از گات عضویت/مجوز مستثنی است — خطای بررسی عضویت
+      // نباید ادمین اصلی را قفل کند (مثل home/recheck)
+      if (isAdmin) {
+        await renderView(tg, target, statusView(await buildAdminStatusText(env)));
+        return;
+      }
       const allowed = await gateUser(tg, env, callback.fromId, target, deps);
       if (allowed) {
-        const text = isAdmin
-          ? await buildAdminStatusText(env)
-          : await buildUserStatusText(env);
-        await renderView(tg, target, statusView(text));
+        await renderView(tg, target, statusView(await buildUserStatusText(env)));
       }
       return;
     }
