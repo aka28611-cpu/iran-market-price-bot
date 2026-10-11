@@ -536,8 +536,15 @@ async function handleAdminCommand(
   const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
     fetchFn: deps.fetchFn,
   });
-  const sendView = async (text: string, keyboard?: unknown): Promise<void> => {
-    await tg.sendMessage(message.chatId, text, keyboard ? { replyMarkup: keyboard } : {});
+  const sendView = async (
+    text: string,
+    keyboard?: unknown,
+    parseMode?: "HTML",
+  ): Promise<void> => {
+    await tg.sendMessage(message.chatId, text, {
+      ...(keyboard ? { replyMarkup: keyboard } : {}),
+      ...(parseMode ? { parseMode } : {}),
+    });
   };
 
   switch (input.name) {
@@ -555,7 +562,8 @@ async function handleAdminCommand(
       return;
 
     case "price":
-      await sendView(await buildAdminPriceText(env, deps));
+      // پیشنمایش همان قالب HTML کانال — با parse_mode بولد رندر میشود
+      await sendView(await buildAdminPriceText(env, deps), undefined, "HTML");
       return;
 
     case "update": {

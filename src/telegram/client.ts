@@ -91,9 +91,13 @@ export class TelegramClient {
   sendMessage(
     chatId: string | number,
     text: string,
-    options: { replyMarkup?: unknown } = {},
+    options: { replyMarkup?: unknown; parseMode?: "HTML" | "MarkdownV2" } = {},
   ): Promise<TelegramResult> {
     const payload: Record<string, unknown> = { chat_id: chatId, text };
+    if (options.parseMode !== undefined) {
+      // متن قالب عمومی کانال <b> دارد — فقط با parseMode رندر بولد میشود
+      payload.parse_mode = options.parseMode;
+    }
     if (options.replyMarkup !== undefined) {
       // JSON serialization دقیقاً مطابق Bot API (reply_markup رشته JSON است)
       payload.reply_markup = JSON.stringify(options.replyMarkup);
@@ -109,13 +113,16 @@ export class TelegramClient {
     chatId: string | number,
     messageId: number,
     text: string,
-    options: { replyMarkup?: unknown } = {},
+    options: { replyMarkup?: unknown; parseMode?: "HTML" | "MarkdownV2" } = {},
   ): Promise<TelegramResult> {
     const payload: Record<string, unknown> = {
       chat_id: chatId,
       message_id: messageId,
       text,
     };
+    if (options.parseMode !== undefined) {
+      payload.parse_mode = options.parseMode;
+    }
     if (options.replyMarkup !== undefined) {
       payload.reply_markup = JSON.stringify(options.replyMarkup);
     }

@@ -94,6 +94,8 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toContain("sendMessage");
     expect(calls[0]?.body.chat_id).toBe(CHANNEL_ID);
+    // قالب عمومی کانال با بولد HTML ارسال میشود
+    expect(calls[0]?.body.parse_mode).toBe("HTML");
     expect(kv.store.get(USD_MESSAGE_ID_KEY)).toBe("100");
     expect(
       JSON.parse(kv.store.get(LAST_USD_PRICE_KEY) ?? "{}").buy,
@@ -118,6 +120,7 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     expect(calls[0]?.url).toContain("editMessageText");
     expect(calls[0]?.body.message_id).toBe(100);
     expect(calls[0]?.body.chat_id).toBe(CHANNEL_ID);
+    expect(calls[0]?.body.parse_mode).toBe("HTML");
   });
 
   it("id خراب در KV → مسیر پیام جدید (نه خطا)", async () => {
@@ -245,7 +248,9 @@ describe("runUsdRefresh — ساعت بازار (OPEN / CLOSED / UNKNOWN)", () =
     expect(calls[0]?.url).toContain("editMessageText");
     expect(calls[0]?.body.message_id).toBe(100);
     expect(String(calls[0]?.body.text)).toContain("بازار بسته است");
-    expect(String(calls[0]?.body.text)).toContain("۲۵۳٬۰۰۰");
+    expect(String(calls[0]?.body.text)).toContain("<b>253,000</b> خرید");
+    expect(String(calls[0]?.body.text)).toContain("<b>253,800</b> معامله");
+    expect(String(calls[0]?.body.text)).not.toContain("بروزرسانی");
     // کش (آخرین قیمت معتبر) بازنویسی نمی‌شود
     expect(
       JSON.parse(kv.store.get(LAST_USD_PRICE_KEY) ?? "{}").updatedAt,

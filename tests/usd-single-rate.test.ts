@@ -18,12 +18,15 @@ import {
 
 /**
  * مسیر «تک‌نرخی» جاب دلار (منابعی مثل jahankhahan که میز خرید/فروش ندارند).
- * اصول fail-closed حفظ میشود: بدون داده = بدون انتشار، بدون مقدار جایگزین.
+ * اصول fail-closed حفظ می‌شود: بدون داده = بدون انتشار، بدون مقدار جایگزین.
+ * قالب عمومی کانال (۱۴۰۵/۰۷): خط «معامله» + تتر مستقل — خرید/فروش از نرخ
+ * واحد ساخته نمی‌شوند (مقدار جعلی ممنوع — دستور مالک پروژه).
  */
 
 const USER_REPORT: MarketReport = {
   items: [
     { symbol: "usd", value: 266_200, unit: "toman" },
+    { symbol: "usdt", value: 266_350, unit: "toman" },
     { symbol: "eur", value: 299_010, unit: "toman" },
   ],
   fetchedAt: new Date().toISOString(),
@@ -36,7 +39,7 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     resetRateLimiterForTests();
   });
 
-  it("provider بدون میز خرید/فروش → نرخ واحد از گزارش بازار منتشر میشود", async () => {
+  it("provider بدون میز خرید/فروش → نرخ واحد + تتر مستقل در قالب عمومی کانال منتشر می‌شود", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -53,19 +56,58 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     const sent = calls.filter((c) => c.url.endsWith("/sendMessage"));
     expect(sent).toHaveLength(1);
     expect(sent[0]?.body.chat_id).toBe(env.CHANNEL_ID);
-    expect(String(sent[0]?.body.text)).toContain("نرخ دلار");
-    expect(String(sent[0]?.body.text)).toContain("۲۶۶٬۲۰۰");
-    // بدون ساخت buy/sell از نرخ واحد
-    expect(String(sent[0]?.body.text)).not.toContain("خرید:");
-    expect(String(sent[0]?.body.text)).not.toContain("فروش:");
-    expect(String(sent[0]?.body.text)).toContain("بدون میز خرید/فروش");
-    // دادهٔ pinned ذخیره شد
+    // قالب مالک پروژه: خط «معامله» + جداکننده + تتر مستقل
+    expect(String(sent[0]?.body.text)).toBe(
+      "💸 دلار فردایی تهران 💵 <b>266,200</b> معامله ✅\n\n" +
+        "━━━━━━━━━━━━━━\n💵 قیمت تتر: <b>266,350 تومان</b>",
+    );
+    // ارسال با parse_mode=HTML (رندر بولد تلگرام)
+    expect(sent[0]?.body.parse_mode).toBe("HTML");
+    // بدون ساخت buy/sell از نرخ واحد — خطهای خرید/فروش وجود ندارند
+    expect(String(sent[0]?.body.text)).not.toContain("خرید");
+    expect(String(sent[0]?.body.text)).not.toContain("فروش");
+    // بدون نام منبع / زمان / جزئیات فنی / ارقام فارسی
+    expect(String(sent[0]?.body.text)).not.toContain("منبع");
+    expect(String(sent[0]?.body.text)).not.toContain("نرخ دلار");
+    expect(String(sent[0]?.body.text)).not.toContain("۲");
+    // دادهٔ pinned ذخیره شد — شامل تتر مستقل
     expect(kv.store.has(PIN_TEXT_KEY)).toBe(true);
     expect(kv.store.has(PIN_DATA_KEY)).toBe(true);
+    const pinData = JSON.parse(kv.store.get(PIN_DATA_KEY) ?? "{}");
+    expect(pinData.value).toBe(266_200);
+    expect(pinData.tether).toBe(266_350);
+    expect(pinData.dataDate).toBe(USER_REPORT.dataDate);
     expect(kv.store.has(USD_MESSAGE_ID_KEY)).toBe(true);
   });
 
-  it("اجرای دوم با دادهٔ یکسان → ویرایش نمیکند (UNCHANGED — صرفهٔ KV/Telegram)", async () => {
+  it("گزارش بدون آیتم تتر → پیام فقط با خط معامله (خط تتر حذف — نه جایگزین)", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const env = makeEnv({ STATE: new MockKV() });
+    const report: MarketReport = {
+      ...USER_REPORT,
+      items: [
+        { symbol: "usd", value: 266_200, unit: "toman" },
+        { symbol: "eur", value: 299_010, unit: "toman" },
+      ],
+    };
+    const result = await runUsdRefresh(env, {
+      fetchFn,
+      provider: fakeProvider(null, report),
+      marketHours: alwaysOpenMarketHours(),
+    });
+    expect(result.status).toBe("ok");
+    const sent = calls.filter((c) => c.url.endsWith("/sendMessage"));
+    expect(sent).toHaveLength(1);
+    expect(String(sent[0]?.body.text)).toBe(
+      "💸 دلار فردایی تهران 💵 <b>266,200</b> معامله ✅",
+    );
+    expect(String(sent[0]?.body.text)).not.toContain("قیمت تتر");
+    expect(String(sent[0]?.body.text)).not.toContain("━━");
+    // تتر هرگز از دلار ساخته نمی‌شود (266_200 نمایش داده شد، نه کپی در خط تتر)
+    expect(String(sent[0]?.body.text)).not.toContain("قیمت تتر: <b>266,200");
+  });
+
+  it("اجرای دوم با دادهٔ یکسان → ویرایش نمی‌کند (UNCHANGED — صرفهٔ KV/Telegram)", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -89,7 +131,7 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     expect(edits).toHaveLength(0);
   });
 
-  it("تغییر نرخ → ویرایش همان پیام (editMessageText با message_id ذخیرهشده)", async () => {
+  it("تغییر نرخ → ویرایش همان پیام (editMessageText با message_id ذخیره‌شده)", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -103,6 +145,7 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
       ...USER_REPORT,
       items: [
         { symbol: "usd", value: 270_000, unit: "toman" },
+        { symbol: "usdt", value: 270_150, unit: "toman" },
         { symbol: "eur", value: 299_010, unit: "toman" },
       ],
     };
@@ -117,7 +160,15 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     const edits = calls.filter((c) => c.url.endsWith("/editMessageText"));
     expect(edits).toHaveLength(1);
     expect(String(edits[0]?.body.message_id)).toBe("100");
-    expect(String(edits[0]?.body.text)).toContain("۲۷۰٬۰۰۰");
+    expect(String(edits[0]?.body.text)).toContain("<b>270,000</b> معامله");
+    expect(String(edits[0]?.body.text)).toContain("<b>270,150 تومان</b>");
+    // ویرایش هم با parse_mode=HTML ارسال می‌شود
+    expect(edits[0]?.body.parse_mode).toBe("HTML");
+    // ویرایش همان پیام است — پیام جدیدی ساخته نشد
+    expect(calls.filter((c) => c.url.endsWith("/sendMessage"))).toHaveLength(1);
+    // دادهٔ pinned هم با نرخ جدید نوشته شد
+    const pinData = JSON.parse(kv.store.get(PIN_DATA_KEY) ?? "{}");
+    expect(pinData.tether).toBe(270_150);
   });
 
   it("گزارش بدون آیتم usd → no-data بدون انتشار", async () => {
@@ -177,7 +228,7 @@ describe("runUsdRefresh — بازار بسته با دادهٔ تک‌نرخ ک
     resetRateLimiterForTests();
   });
 
-  it("نمایش آخرین نرخ معتبر با نشان بازار بسته — بدون fetch جدید", async () => {
+  it("نمایش آخرین نرخ معتبر + تتر کش‌شده با نشان بازار بسته — بدون fetch جدید", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -237,11 +288,13 @@ describe("runUsdRefresh — بازار بسته با دادهٔ تک‌نرخ ک
     expect(result.status).toBe("market-closed");
     // provider در بازار بسته صدا زده نشد
     expect(fetchedCalls.length).toBe(fetchCountBefore);
-    // ویرایش پیام ثابت با نشان بازار بسته
+    // ویرایش پیام ثابت با نشان بازار بسته + همان نرخ‌های کش‌شده
     const edits = calls.filter((c) => c.url.endsWith("/editMessageText"));
     expect(edits).toHaveLength(1);
     expect(String(edits[0]?.body.text)).toContain("بازار بسته");
-    expect(String(edits[0]?.body.text)).toContain("آخرین نرخ معتبر");
+    expect(String(edits[0]?.body.text)).toContain("<b>266,200</b> معامله");
+    expect(String(edits[0]?.body.text)).toContain("<b>266,350 تومان</b>");
+    expect(edits[0]?.body.parse_mode).toBe("HTML");
   });
 
   it("بدون هیچ کش → no-data (MARKET_CLOSED_NO_CACHE)", async () => {
@@ -262,12 +315,12 @@ describe("runUsdRefresh — بازار بسته با دادهٔ تک‌نرخ ک
   });
 });
 
-describe("runUsdRefresh — صرفهجویی نوشتن KV", () => {
+describe("runUsdRefresh — صرفه‌جویی نوشتن KV", () => {
   beforeEach(() => {
     resetRateLimiterForTests();
   });
 
-  it("وضعیت ake run فقط در تغییر مینویسد (نه هر اجرا)", async () => {
+  it("وضعیت هر اجرا فقط در تغییر می‌نویسد (نه هر اجرا)", async () => {
     const { fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -296,6 +349,6 @@ describe("runUsdRefresh — صرفهجویی نوشتن KV", () => {
     const statusWrites2 = kv.putCalls.filter(
       (c) => c.key === USD_STATUS_KEY,
     ).length;
-    expect(statusWrites2).toBe(2); // ok → ok/UNCHANGED گذار؛ اجرای سوم چیزی نمینویسد
+    expect(statusWrites2).toBe(2); // ok → ok/UNCHANGED گذار؛ اجرای سوم چیزی نمی‌نویسد
   });
 });

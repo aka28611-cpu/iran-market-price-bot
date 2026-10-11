@@ -158,6 +158,8 @@ export async function readLastUsdPrice(
 export interface PinnedUsdSingleRate {
   value: number;
   dataDate?: string;
+  /** آخرین نرخ مستقل تتر (تومان) — غایب = خط تتر در پیام نمایش داده نمیشود */
+  tether?: number;
 }
 
 /** آخرین دادهٔ تک‌نرخ ذخیرهشده — sanitize کامل (fail-closed) */
@@ -173,7 +175,13 @@ export async function readPinnedUsdSingleRate(
   }
   const dataDate =
     typeof record.dataDate === "string" ? record.dataDate : undefined;
-  return { value, dataDate };
+  // تتر فقط مقدار عددی معتبر پذیرفته میشود — هرگز از دلار ساخته نمیشود
+  const tetherRaw = record.tether;
+  const tether =
+    typeof tetherRaw === "number" && Number.isFinite(tetherRaw) && tetherRaw > 0
+      ? tetherRaw
+      : undefined;
+  return { value, dataDate, ...(tether !== undefined ? { tether } : {}) };
 }
 
 export async function readLastReport(

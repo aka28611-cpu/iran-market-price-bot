@@ -156,10 +156,10 @@ describe("parseJahankhahanTimestamp — شمسی + ساعت تهران → ISO",
 // ---------- parse payload ----------
 
 describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
-  it("نمونه کامل → ۱۲ آیتم معتبر با مهر زمانی مشترک", () => {
+  it("نمونه کامل → ۱۳ آیتم معتبر با مهر زمانی مشترک", () => {
     const result = parseJahankhahanPayload(SAMPLE);
     expect(result).not.toBeNull();
-    expect(result?.items).toHaveLength(12);
+    expect(result?.items).toHaveLength(13);
     expect(result?.missing).toEqual([]);
     for (const item of result?.items ?? []) {
       expect(item.updatedAt).toBe("2026-10-08T11:11:00.000Z");
@@ -173,6 +173,10 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     );
     expect(bySymbol.get("usd")?.value).toBe(267_200);
     expect(bySymbol.get("usd")?.unit).toBe("toman");
+    // تتر: نرخ مستقل (متفاوت از دلار) — نماد usdt با واحد تومان
+    expect(bySymbol.get("usdt")?.value).toBe(267_878);
+    expect(bySymbol.get("usdt")?.unit).toBe("toman");
+    expect(bySymbol.get("usdt")?.value).not.toBe(267_200);
     expect(bySymbol.get("gold18k")?.value).toBe(26_393_400);
     expect(bySymbol.get("gold24k")?.value).toBe(35_190_900);
     expect(bySymbol.get("bahar")?.value).toBe(259_330_000);
@@ -218,7 +222,7 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     };
     delete (partial.rates as Record<string, unknown>)["aed"];
     const result = parseJahankhahanPayload(partial);
-    expect(result?.items).toHaveLength(11);
+    expect(result?.items).toHaveLength(12);
     expect(result?.missing).toContain("aed");
     const symbols = (result?.items ?? []).map((i) => i.symbol);
     expect(symbols).not.toContain("aed");
@@ -239,7 +243,7 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
         rates: { ...(SAMPLE.rates as Record<string, unknown>), dollar: value },
       };
       const result = parseJahankhahanPayload(payload);
-      expect(result?.items).toHaveLength(11);
+      expect(result?.items).toHaveLength(12);
       expect(result?.missing).toContain("dollar");
       const symbols = (result?.items ?? []).map((i) => i.symbol);
       expect(symbols).not.toContain("usd");
@@ -264,7 +268,7 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     const symbols = (result?.items ?? []).map((i) => i.symbol);
     expect(symbols).not.toContain("ounce");
     expect(result?.missing).toContain("ounce");
-    expect(result?.items).toHaveLength(11);
+    expect(result?.items).toHaveLength(12);
   });
 
   it("فیلدهای تأییدنشده غایب → مقدار null در نتیجه unverified", () => {
@@ -340,7 +344,7 @@ describe("JahankhahanProvider — fetchMarketReport", () => {
     expect(report).not.toBeNull();
     expect(report?.source).toBe("jahankhahan");
     expect(report?.fetchedAt).toBe("2026-10-08T11:45:00.000Z");
-    expect(report?.items).toHaveLength(12);
+    expect(report?.items).toHaveLength(13);
 
     const symbols = (report?.items ?? []).map((i) => i.symbol);
     expect(symbols).not.toContain("mesghal");
@@ -601,6 +605,9 @@ describe('fixture واقعی live.json — parse بدون خطا', () => {
     expect(result?.timeExact).toBe(false);
     const usd = result?.items.find((i) => i.symbol === "usd");
     expect(usd?.value).toBeGreaterThan(0);
+    // فیکسچر واقعی شامل tether=267699 است — نرخ مستقل تتر parse میشود
+    const usdt = result?.items.find((i) => i.symbol === "usdt");
+    expect(usdt?.value).toBe(267_699);
     const ounce = result?.items.find((i) => i.symbol === "ounce");
     expect(ounce?.value).toBeGreaterThan(0);
     // همهٔ فیلدهای تأییدشدهٔ تأییدشده معتبرند

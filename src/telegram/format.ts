@@ -12,57 +12,115 @@ import type {
  *
  * اصل: هیچ مقدار جعلی جایگزین نمی‌شود؛
  * آیتم «نبود» = حذف کامل آن خط از پیام.
+ *
+ * استثنا: پیام ثابت دلار/تتر (قالب عمومی کانال، ۱۴۰۵/۰۷) — متن
+ * HTML-آماده است و با parse_mode=HTML ارسال میشود (<b> = بولد تلگرام؛
+ * محتوای پیام هیچ کاراکتر < > & ندارد پس escape لازم نیست).
+ * قالب دقیق مالک پروژه:
+ *   💸 دلار فردایی تهران 💵 **N** خرید 💸
+ *   💸 دلار فردایی تهران 💵 **N** فروش 💵
+ *   💸 دلار فردایی تهران 💵 **N** معامله ✅
+ *   ━━━━━━━━━━━━━━
+ *   💵 قیمت تتر: **N تومان**
+ * • ارقام انگلیسی + جداکننده «,»؛ واحد تومان
+ * • نام منبع / زمان دریافت داده / جزئیات فنی در پیام عمومی نیست
+ * • خطهای خرید/فروش فقط با دادهٔ واقعی میز — از نرخ واحد ساخته نمیشوند
+ * • خط تتر فقط با نرخ مستقل تتر — هرگز برابر دلار فرض نمیشود
  */
 
+// ---------- اعداد انگلیسی (قالب عمومی کانال) ----------
+
+/** پول/قیمت با ارقام انگلیسی و جداکننده هزارگان «,» — گرد به عدد صحیح */
+export function formatEnMoney(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  const rounded = Math.round(value);
+  const sign = rounded < 0 ? "-" : "";
+  const grouped = String(Math.abs(rounded)).replace(
+    /\B(?=(\d{3})+(?!\d))/g,
+    ",",
+  );
+  return sign + grouped;
+}
+
+// ---------- قالب پیام ثابت دلار (کانال عمومی) ----------
+
+const USD_PIN_TITLE = "دلار فردایی تهران";
+const PIN_SEPARATOR = "━━━━━━━━━━━━━━";
+
+/** نرخ تتر معتبر است؟ (فقط برای نمایش — ساخت مقدار ممنوع) */
+function isValidTether(value: number | null | undefined): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0
+  );
+}
+
+/** «💸 دلار فردایی تهران 💵 <b>N</b> LABEL EMOJI» */
+function usdPinLine(
+  value: number,
+  label: "خرید" | "فروش" | "معامله",
+  tail: string,
+): string {
+  return `💸 ${USD_PIN_TITLE} 💵 <b>${formatEnMoney(value)}</b> ${label} ${tail}`;
+}
+
+/** بلوک تتر: خط خالی + جداکننده + خط تتر — فقط با نرخ مستقل موجود */
+function tetherBlock(tether: number): string[] {
+  return ["", PIN_SEPARATOR, `💵 قیمت تتر: <b>${formatEnMoney(tether)} تومان</b>`];
+}
+
+/** بلوک بازار بسته (نمایش صادقانهٔ آخرین داده معتبر — بدون مقدار جدید) */
+const CLOSED_MARK = "🌙 بازار بسته است";
+
+/**
+ * پیام ثابت دلار — مسیر میز خرید/فروش (providerهای فردایی).
+ * هر سه نرخ واقعیاند؛ تتر فقط اگر دادهٔ مستقل داشته باشد.
+ */
 export function formatUsdMessage(price: UsdTehranPrice): string {
-  return [
-    "💵 دلار فردایی تهران",
-    "────────────────",
-    `خرید: ${faMoney(price.buy)}`,
-    `فروش: ${faMoney(price.sell)}`,
-    `معامله: ${faMoney(price.trade)}`,
-    "────────────────",
-    `🕐 بروزرسانی: ${faTimestamp(price.updatedAt)}`,
-  ].join("\n");
+  const lines: string[] = [
+    usdPinLine(price.buy, "خرید", "💸"),
+    "",
+    usdPinLine(price.sell, "فروش", "💵"),
+    "",
+    usdPinLine(price.trade, "معامله", "✅"),
+  ];
+  if (isValidTether(price.tether)) {
+    lines.push(...tetherBlock(price.tether));
+  }
+  return lines.join("\n");
 }
 
 /**
- * پیام ثابت دلار در حالت «بازار بسته» — همان داده «آخرین قیمت معتبر»
- * (بدون مقدار جدید/ساختگی) با نشان بسته بودن بازار.
+ * پیام ثابت دلار در حالت «بازار بسته» — همان قالب + نشان بسته بودن.
+ * داده «آخرین قیمت معتبر» است (بدون مقدار جدید/ساختگی).
  */
 export function formatUsdMessageClosed(price: UsdTehranPrice): string {
-  return [
-    "💵 دلار فردایی تهران",
-    "────────────────",
-    `خرید: ${faMoney(price.buy)}`,
-    `فروش: ${faMoney(price.sell)}`,
-    `معامله: ${faMoney(price.trade)}`,
-    "────────────────",
-    "🌙 بازار بسته است — نمایش آخرین قیمت معتبر",
-    `🕐 بروزرسانی: ${faTimestamp(price.updatedAt)}`,
-  ].join("\n");
+  const base = formatUsdMessage(price);
+  return `${base}\n\n${CLOSED_MARK}`;
 }
 
 /**
- * پیام ثابت «دلار بازار» برای منابع تک‌نرخی (بدون میز خرید/فروش).
- * خرید=فروش=معامله از نرخ واحد ساخته نمیشود — فقط همان یک نرخ واقعی نمایش داده میشود.
+ * پیام ثابت «دلار فردایی تهران» برای منابع تک‌نرخی (بدون میز خرید/فروش).
+ *
+ * فقط همان «یک نرخ واقعی» نمایش داده میشود — در قالب مالک پروژه،
+ * برچسب صادقانهٔ نرخ واحد «معامله» است (آخرین نرخ معاملهٔ بازار).
+ * خطهای «خرید»/«فروش» هرگز از نرخ واحد ساخته نمیشوند (مقدار جعلی).
+ * تتر فقط با نرخ مستقل معتبر — غایب = حذف خط و جداکننده.
  */
 export function formatPinnedUsdSingleRate(
-  value: number,
-  dataDate: string | undefined,
+  usd: number,
+  tether: number | null,
   closed: boolean,
 ): string {
-  return [
-    "💵 دلار بازار تهران",
-    "────────────────",
-    `نرخ دلار: ${faMoney(value)} تومان`,
-    "────────────────",
-    closed ? "🌙 بازار بسته است — آخرین نرخ معتبر" : "",
-    dataDate ? `📅 دادهٔ منبع: ${faTimestamp(dataDate)}` : "",
-    "ℹ️ منبع: نرخ واحد بازار (بدون میز خرید/فروش)",
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
+  const lines: string[] = [usdPinLine(usd, "معامله", "✅")];
+  if (isValidTether(tether)) {
+    lines.push(...tetherBlock(tether));
+  }
+  if (closed) {
+    lines.push("", CLOSED_MARK);
+  }
+  return lines.join("\n");
 }
 
 interface ReportMeta {
@@ -73,6 +131,7 @@ interface ReportMeta {
 
 const REPORT_META: Record<ReportSymbol, ReportMeta> = {
   usd: { group: "currency", title: "دلار", unit: "toman" },
+  usdt: { group: "currency", title: "تتر", unit: "toman" },
   eur: { group: "currency", title: "یورو", unit: "toman" },
   gbp: { group: "currency", title: "پوند", unit: "toman" },
   try: { group: "currency", title: "لیر", unit: "toman" },

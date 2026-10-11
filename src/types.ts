@@ -13,6 +13,11 @@ export interface UsdTehranPrice {
   sell: number;
   /** نرخ آخرین معامله */
   trade: number;
+  /**
+   * نرخ مستقل تتر (تومان) — اختیاری.
+   * غایب = خط تتر در پیام عمومی نمایش داده نمیشود (هرگز از دلار ساخته نمیشود).
+   */
+  tether?: number;
   /** زمان آخرین بروزرسانی داده (ISO 8601) */
   updatedAt: string;
   /** شناسه منبع داده (برای لاگ و پیام وضعیت) */
@@ -25,6 +30,7 @@ export type ReportGroup = "currency" | "gold" | "coin";
 /** کلیدهای پشتیبانی‌شده در گزارش ۶ ساعته */
 export type ReportSymbol =
   | "usd"
+  | "usdt"
   | "eur"
   | "gbp"
   | "try"

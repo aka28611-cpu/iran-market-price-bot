@@ -41,6 +41,16 @@ import type { PriceProvider } from "./provider";
  *    سکه امامی مجاز نیست؛ تا تأیید منبع در گزارش production نمایش نمییابد)
  *  این دو فیلد در parse نتیجه حاضرند (برای تأیید آینده) اما هرگز وارد
  *  items گزارش نمیشوند؛ بنابراین فرمتر پیام تلگرام هرگز آنها را رندر نمیکند.
+ *
+ * rates.tether (۱۴۰۵/۰۷ — بازطراحی قالب پیام عمومی):
+ *  • نرخ تتر (تومان) بهعنوان دادهٔ «مستقل» از دلار — مقدار آن در منبع با
+ *    rates.dollar متفاوت است و هرگز از دلار ساخته/کپی نمیشود. صحت آن با
+ *    منابع مستقل دیگر همزبانی شد: TGJU (crypto-tether-irr) و Wallex (USDTTMN)
+ *    در تاریخ ۲۰۲۶-10-11 اختلاف < ۰.۱٪ داشتند.
+ *  • غایب/نامعتبر → آیتم حذف و خط تتر از پیام عمومی حذف میشود (fail-closed؛
+ *    جایگزینی با نرخ دلار ممنوع است).
+ *  • توجه: منبع میز خرید/فروش دلار ندارد (فقط نرخ واحد) — خطهای «خرید»/
+ *    «فروش» در پیام عمومی از نرخ واحد ساخته نمیشوند (دستور مالک پروژه).
  */
 
 /** خطای پیکربندی provider (مثلاً PRICE_API_BASE_URL غایب/نامعتبر) */
@@ -151,6 +161,7 @@ interface FieldMapping {
 /** فیلدهای تأییدشده — قابل انتشار در گزارش production */
 const VERIFIED_FIELD_MAPPINGS: readonly FieldMapping[] = [
   { key: "dollar", symbol: "usd", unit: "toman" },
+  { key: "tether", symbol: "usdt", unit: "toman" },
   { key: "euro", symbol: "eur", unit: "toman" },
   { key: "pound", symbol: "gbp", unit: "toman" },
   { key: "lira", symbol: "try", unit: "toman" },

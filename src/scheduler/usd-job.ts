@@ -29,7 +29,11 @@ import {
   readPinnedUsdSingleRate,
   type PinnedUsdSingleRate,
 } from "../state";
-import { validateUsdPrice, validateUsdPriceShape } from "../validation";
+import {
+  MAX_REASONABLE_PRICE,
+  validateUsdPrice,
+  validateUsdPriceShape,
+} from "../validation";
 
 /**
  * جاب هر ۱ دقیقه — بروزرسانی «پیام ثابت» دلار با editMessageText.
@@ -50,6 +54,18 @@ import { validateUsdPrice, validateUsdPriceShape } from "../validation";
  *  • هیچ مقدار جایگزین (fallback) ارسال نمیشود
  */
 
+/**
+ * قالب پیام ثابت (مالک پروژه، ۱۴۰۵/۰۷) — ارقام انگلیسی + بولد HTML:
+ *   💸 دلار فردایی تهران 💵 **N** خرید 💸
+ *   💸 دلار فردایی تهران 💵 **N** فروش 💵
+ *   💸 دلار فردایی تهران 💵 **N** معامله ✅
+ *   ━━━━━━━━━━━━━━
+ *   💵 قیمت تتر: **N تومان**
+ * • نام منبع/زمان دریافت/جزئیات فنی در پیام عمومی نیست
+ * • تتر = نرخ مستقل (symbol="usdt" در گزارش) — هرگز برابر دلار فرض نمیشود؛
+ *   غایب/نامعتبر = حذف خط تتر از پیام (نه جایگزین)
+ * • ارسال با parse_mode=HTML (متن <b> دارد)
+ */
 export interface JobDeps {
   /** تزریق fetch برای تست */
   fetchFn?: typeof fetch;
@@ -222,7 +238,19 @@ async function refreshSingleRate(
     return result;
   }
 
-  const text = formatPinnedUsdSingleRate(usdItem.value, report.dataDate, false);
+  // نرخ مستقل تتر — فقط مقدار عددی معتبر؛ غایب/نامعتبر = حذف خط تتر
+  // (هرگز از نرخ دلار ساخته نمیشود — دستور مالک پروژه)
+  const tetherItem = report.items.find(
+    (item) =>
+      item.symbol === "usdt" &&
+      typeof item.value === "number" &&
+      Number.isFinite(item.value) &&
+      item.value > 0 &&
+      item.value <= MAX_REASONABLE_PRICE,
+  );
+  const tether = tetherItem?.value ?? null;
+
+  const text = formatPinnedUsdSingleRate(usdItem.value, tether, false);
   const unchanged = text === (await readJson<string>(env.STATE, PIN_TEXT_KEY));
   if (unchanged) {
     const result = await record("ok", "UNCHANGED");
@@ -237,10 +265,16 @@ async function refreshSingleRate(
   const pinnedData: PinnedUsdSingleRate = {
     value: usdItem.value,
     dataDate: report.dataDate,
+    ...(tether !== null ? { tether } : {}),
   };
   await writeJson(env.STATE, PIN_DATA_KEY, pinnedData);
   const result = await record("ok");
-  logInfo("job.usd", { status: result.status, provider: provider.name, mode: "single-rate" });
+  logInfo("job.usd", {
+    status: result.status,
+    provider: provider.name,
+    mode: "single-rate",
+    tether: tether !== null ? "independent" : "absent",
+  });
   return result;
 }
 
@@ -286,7 +320,11 @@ async function refreshWhileMarketClosed(
   // اولویت ۲: آخرین نرخ تک‌قیمت (منابع تک‌نرخی)
   const pinned = await readPinnedUsdSingleRate(env.STATE);
   if (pinned) {
-    const text = formatPinnedUsdSingleRate(pinned.value, pinned.dataDate, true);
+    const text = formatPinnedUsdSingleRate(
+      pinned.value,
+      pinned.tether ?? null,
+      true,
+    );
     const unchanged = text === (await readJson<string>(env.STATE, PIN_TEXT_KEY));
     if (unchanged) {
       const result = await record("market-closed", "UNCHANGED");
@@ -329,7 +367,7 @@ async function publishPinnedMessage(
 
   if (messageId === null) {
     // اولین اجرا: ساخت «پیام ثابت» و ذخیره id آن
-    const sent = await tg.sendMessage(target, text);
+    const sent = await tg.sendMessage(target, text, { parseMode: "HTML" });
     if (!sent.ok || sent.messageId === undefined) {
       const result = await record("send-error", sent.error);
       logWarn("job.usd", { status: result.status, reason: sent.error });
@@ -340,7 +378,9 @@ async function publishPinnedMessage(
   }
 
   // اجراهای بعدی: ویرایش همان پیام — پیام جدیدی ساخته نمی‌شود
-  const edited = await tg.editMessageText(target, messageId, text);
+  const edited = await tg.editMessageText(target, messageId, text, {
+    parseMode: "HTML",
+  });
   if (!edited.ok) {
     const result = await record("edit-error", edited.error);
     logWarn("job.usd", { status: result.status, reason: edited.error });
