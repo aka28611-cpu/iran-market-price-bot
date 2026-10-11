@@ -156,10 +156,10 @@ describe("parseJahankhahanTimestamp — شمسی + ساعت تهران → ISO",
 // ---------- parse payload ----------
 
 describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
-  it("نمونه کامل → ۱۳ آیتم معتبر با مهر زمانی مشترک", () => {
+  it("نمونه کامل → ۱۴ آیتم معتبر با مهر زمانی مشترک (emami تأییدشده)", () => {
     const result = parseJahankhahanPayload(SAMPLE);
     expect(result).not.toBeNull();
-    expect(result?.items).toHaveLength(13);
+    expect(result?.items).toHaveLength(14);
     expect(result?.missing).toEqual([]);
     for (const item of result?.items ?? []) {
       expect(item.updatedAt).toBe("2026-10-08T11:11:00.000Z");
@@ -179,6 +179,9 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     expect(bySymbol.get("usdt")?.value).not.toBe(267_200);
     expect(bySymbol.get("gold18k")?.value).toBe(26_393_400);
     expect(bySymbol.get("gold24k")?.value).toBe(35_190_900);
+    // سکه امامی: rates.coin — تأیید متقاطع با TGJU sekee (۲۰۲۶-۱۰-۱۱)
+    expect(bySymbol.get("emami")?.value).toBe(269_650_000);
+    expect(bySymbol.get("emami")?.unit).toBe("toman");
     expect(bySymbol.get("bahar")?.value).toBe(259_330_000);
     expect(bySymbol.get("halfCoin")?.value).toBe(142_970_000);
     expect(bySymbol.get("quarterCoin")?.value).toBe(76_980_000);
@@ -191,27 +194,22 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     expect(bySymbol.get("aed")?.value).toBe(73_049);
   });
 
-  it("فیلدهای تأییدنشده: mesghal با برچسب UNKNOWN و coin با UNVERIFIED_COIN", () => {
+  it("فیلد تأییدنشده: فقط mesghal با برچسب UNKNOWN (coin→emami ارتقا یافت)", () => {
     const result = parseJahankhahanPayload(SAMPLE);
     const unverified = result?.unverified ?? [];
-    expect(unverified).toHaveLength(2);
+    expect(unverified).toHaveLength(1);
 
     const mesghal = unverified.find((f) => f.key === "mesghal");
     expect(mesghal?.status).toBe("UNKNOWN");
     expect(mesghal?.value).toBe(114_329_000);
     expect(mesghal?.symbol).toBe("mesghal");
-
-    const coin = unverified.find((f) => f.key === "coin");
-    expect(coin?.status).toBe("UNVERIFIED_COIN");
-    expect(coin?.value).toBe(269_650_000);
-    expect(coin?.symbol).toBe("emami");
   });
 
-  it("فیلدهای تأییدنشده هرگز وارد items نمیشوند (نمایش production ممنوع)", () => {
+  it("فیلدهای تأییدنشده وارد items نمیشوند؛ emami (تأییدشده) وارد میشود", () => {
     const result = parseJahankhahanPayload(SAMPLE);
     const symbols = (result?.items ?? []).map((i) => i.symbol);
     expect(symbols).not.toContain("mesghal");
-    expect(symbols).not.toContain("emami");
+    expect(symbols).toContain("emami");
     expect(symbols).not.toContain("goldMelted");
   });
 
@@ -222,7 +220,7 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     };
     delete (partial.rates as Record<string, unknown>)["aed"];
     const result = parseJahankhahanPayload(partial);
-    expect(result?.items).toHaveLength(12);
+    expect(result?.items).toHaveLength(13);
     expect(result?.missing).toContain("aed");
     const symbols = (result?.items ?? []).map((i) => i.symbol);
     expect(symbols).not.toContain("aed");
@@ -243,7 +241,7 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
         rates: { ...(SAMPLE.rates as Record<string, unknown>), dollar: value },
       };
       const result = parseJahankhahanPayload(payload);
-      expect(result?.items).toHaveLength(12);
+      expect(result?.items).toHaveLength(13);
       expect(result?.missing).toContain("dollar");
       const symbols = (result?.items ?? []).map((i) => i.symbol);
       expect(symbols).not.toContain("usd");
@@ -268,10 +266,10 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     const symbols = (result?.items ?? []).map((i) => i.symbol);
     expect(symbols).not.toContain("ounce");
     expect(result?.missing).toContain("ounce");
-    expect(result?.items).toHaveLength(12);
+    expect(result?.items).toHaveLength(13);
   });
 
-  it("فیلدهای تأییدنشده غایب → مقدار null در نتیجه unverified", () => {
+  it("فیلد تأییدنشده غایب → مقدار null؛ فیلد تأییدشدهٔ غایب → missing", () => {
     const payload: Record<string, unknown> = {
       ...SAMPLE,
       rates: { ...(SAMPLE.rates as Record<string, unknown>) },
@@ -280,8 +278,9 @@ describe("parseJahankhahanPayload — نگاشت فیلدها", () => {
     delete (payload.rates as Record<string, unknown>)["mesghal"];
     const result = parseJahankhahanPayload(payload);
     const unverified = result?.unverified ?? [];
-    expect(unverified.find((f) => f.key === "coin")?.value).toBeNull();
     expect(unverified.find((f) => f.key === "mesghal")?.value).toBeNull();
+    // coin حالا تأییدشده است: غیبتش به «missing» میرود نه unverified
+    expect(result?.missing).toContain("coin");
   });
 });
 
@@ -344,11 +343,11 @@ describe("JahankhahanProvider — fetchMarketReport", () => {
     expect(report).not.toBeNull();
     expect(report?.source).toBe("jahankhahan");
     expect(report?.fetchedAt).toBe("2026-10-08T11:45:00.000Z");
-    expect(report?.items).toHaveLength(13);
+    expect(report?.items).toHaveLength(14);
 
     const symbols = (report?.items ?? []).map((i) => i.symbol);
     expect(symbols).not.toContain("mesghal");
-    expect(symbols).not.toContain("emami");
+    expect(symbols).toContain("emami");
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(LIVE_URL);
@@ -428,9 +427,9 @@ describe("JahankhahanProvider — fetchMarketReport", () => {
     const { provider } = makeProvider();
     const report = await provider.fetchMarketReport();
     const symbols = (report?.items ?? []).map((i) => i.symbol);
-    // coin و mesghal در SAMPLE وجود دارند اما:
+    // mesghal در SAMPLE هست اما تأییدنشده؛ coin→emami تأییدشده و منتشر میشود:
     expect(symbols).not.toContain("mesghal");
-    expect(symbols).not.toContain("emami");
+    expect(symbols).toContain("emami");
     expect(symbols).not.toContain("goldMelted");
   });
 

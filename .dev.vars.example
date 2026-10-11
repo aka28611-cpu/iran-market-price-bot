@@ -18,3 +18,10 @@ PRICE_API_BASE_URL=https://nerkh.jahankhahan.shop/data/live.json
 CHANNEL_LINK=
 # لینک خارجی پشتیبانی (اختیاری) — خالی = سیستم تیکت داخلی ربات
 SUPPORT_LINK=
+
+# --- اعتبارسنجی متقاطع (اختیاری — غایب = پیشفرض فعال) ---
+# در تست محلی میتوان با false چک را خاموش کرد
+CROSS_CHECK_ENABLED=true
+CROSS_CHECK_FX_TOLERANCE_PCT=2.5
+CROSS_CHECK_GOLD_TOLERANCE_PCT=5
+CROSS_CHECK_TETHER_TOLERANCE_PCT=3

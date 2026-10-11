@@ -6,6 +6,13 @@ import {
   evaluateMarketSession,
   type MarketHoursConfig,
 } from "../market-hours";
+import {
+  compareWithReference,
+  crossCheckConfigFromEnv,
+  fetchTgjuQuote,
+  fetchWallexUsdtToman,
+  TGJU_SYMBOL_MAP,
+} from "../providers/cross-check";
 import type { PriceProvider } from "../providers/provider";
 import { getProvider } from "../providers/registry";
 import { TelegramClient } from "../telegram/client";
@@ -15,12 +22,14 @@ import {
   formatPinnedUsdSingleRate,
 } from "../telegram/format";
 import {
+  acquireUsdSendLock,
   getUsdMessageId,
   isPaused,
   LAST_USD_PRICE_KEY,
   readLastUsdPrice,
   recordRunStatusIfChanged,
   readJson,
+  releaseUsdSendLock,
   setUsdMessageId,
   USD_STATUS_KEY,
   writeJson,
@@ -36,7 +45,10 @@ import {
 } from "../validation";
 
 /**
- * جاب هر ۱ دقیقه — بروزرسانی «پیام ثابت» دلار با editMessageText.
+ * جاب هر ۵ دقیقه (عبارت cron با گام ۵ دقیقه) — بروزرسانی «پیام ثابت»
+ * دلار با editMessageText. ساعات fetch/انتشار واقعی با منطق بازار
+ * (market-hours) تعیین میشود؛ اجرای ۵ دقیقه‌ای در بازار بسته فقط کش را
+ * با نشان «بسته» نشان میدهد و دادهٔ بی‌تغییر هیچ تماسی با تلگرام نمیگیرد.
  *
  * دو مسیر داده (هر دو fail-closed):
  *  ۱) میز خرید/فروش (provider فردایی): fetchUsdTehran → خرید/فروش/معامله
@@ -86,7 +98,8 @@ export type JobStatus =
   | "edit-error"
   | "provider-error"
   | "market-closed"
-  | "market-unknown";
+  | "market-unknown"
+  | "suppressed";
 
 export interface JobResult {
   status: JobStatus;
@@ -115,6 +128,8 @@ export function describeJobResult(result: JobResult): string {
       return "🌙 بازار بسته است — پیام ثابت با «آخرین قیمت معتبر» بروزرسانی شد.";
     case "market-unknown":
       return "❓ وضعیت ساعت بازار نامشخص است — برای امنیت هیچ چیزی منتشر نشد.";
+    case "suppressed":
+      return "⏱ اجرای هم‌زمان/تکراری دیگری در جریان بود — این اجرا برای جلوگیری از پیام تکراری نادیده گرفته شد.";
   }
 }
 
@@ -257,23 +272,88 @@ async function refreshSingleRate(
     return result;
   }
 
-  const published = await publishPinnedMessage(env, deps, text, record);
+  // ---- اعتبارسنجی متقاطع (بند ۳ مأموریت) ----
+  // فقط برای مقدار «در حال انتشار» اجرا میشود (صرفهٔ درخواست: دادهٔ
+  // بی‌تغییر از قبل بالادست چک شده و UNCHANGED است).
+  //  • دلار diverged → کل انتشار بلاک + دلیل در status (نرخ مشکوک ممنوع)
+  //  • تتر diverged → فقط خط تتر حذف میشود (دادهٔ مشکوک حذف، نه کل پیام)
+  //  • مرجع در دسترس نیست → advisory (انتشار ادامه) + لاگ — مرجعِ رایگان
+  //    نباید نقطهٔ شکست انتشار باشد؛ «ناموجودی مرجع» reason نمیشود.
+  const fetchFn = deps.fetchFn ?? fetch.bind(globalThis);
+  const cc = crossCheckConfigFromEnv(env);
+  let publishUsd = usdItem.value;
+  let publishTether = tether;
+  if (cc.enabled) {
+    const usdRef = await fetchTgjuQuote(
+      TGJU_SYMBOL_MAP.usd ?? "price_dollar_rl",
+      cc.tgjuUrl,
+      fetchFn,
+      now,
+    );
+    const usdOutcome = compareWithReference(
+      publishUsd,
+      usdRef,
+      cc.fxTolerancePct,
+    );
+    if (usdOutcome.verdict === "diverged") {
+      const result = await record(
+        "invalid",
+        `CROSS_CHECK_DIVERGENCE_USD_${usdOutcome.diffPct}PCT`,
+      );
+      logWarn("job.usd", {
+        status: result.status,
+        reason: "CROSS_CHECK_DIVERGENCE",
+        symbol: "usd",
+        diffPct: usdOutcome.diffPct,
+        reference: usdOutcome.reference,
+      });
+      return result;
+    }
+    if (publishTether !== null) {
+      const tetherRef = await fetchWallexUsdtToman(cc.wallexUrl, fetchFn);
+      const tetherOutcome = compareWithReference(
+        publishTether,
+        tetherRef,
+        cc.tetherTolerancePct,
+      );
+      if (tetherOutcome.verdict === "diverged") {
+        // حذف خط تتر — نرخ مشکوک هرگز منتشر نمیشود (نه جایگزینی)
+        publishTether = null;
+        logWarn("job.usd", {
+          status: "ok",
+          reason: "TETHER_OMITTED_CROSS_CHECK",
+          symbol: "usdt",
+          diffPct: tetherOutcome.diffPct,
+          reference: tetherOutcome.reference,
+        });
+      }
+    }
+  }
+
+  const finalText = formatPinnedUsdSingleRate(publishUsd, publishTether, false);
+  const published = await publishPinnedMessage(env, deps, finalText, record);
   if (published) return published;
 
   // نوشتن فقط در تغییر (صرفه‌جویی سقف KV)
-  await writeJson(env.STATE, PIN_TEXT_KEY, text);
+  await writeJson(env.STATE, PIN_TEXT_KEY, finalText);
   const pinnedData: PinnedUsdSingleRate = {
-    value: usdItem.value,
+    value: publishUsd,
     dataDate: report.dataDate,
-    ...(tether !== null ? { tether } : {}),
+    ...(publishTether !== null ? { tether: publishTether } : {}),
   };
   await writeJson(env.STATE, PIN_DATA_KEY, pinnedData);
-  const result = await record("ok");
+  const result = await record(
+    "ok",
+    publishTether === null && tether !== null
+      ? "TETHER_OMITTED_CROSS_CHECK"
+      : undefined,
+  );
   logInfo("job.usd", {
     status: result.status,
+    reason: result.reason,
     provider: provider.name,
     mode: "single-rate",
-    tether: tether !== null ? "independent" : "absent",
+    tether: publishTether !== null ? "independent" : "absent",
   });
   return result;
 }
@@ -366,15 +446,28 @@ async function publishPinnedMessage(
   const messageId = await getUsdMessageId(env.STATE);
 
   if (messageId === null) {
-    // اولین اجرا: ساخت «پیام ثابت» و ذخیره id آن
-    const sent = await tg.sendMessage(target, text, { parseMode: "HTML" });
-    if (!sent.ok || sent.messageId === undefined) {
-      const result = await record("send-error", sent.error);
-      logWarn("job.usd", { status: result.status, reason: sent.error });
+    // اولین اجرا: قفل مشورتی KV — دو اجرای هم‌زمان نباید دو پیام ثابت
+    // بسازند (Cron Triggers «حداقل یکبار» اجرا میشوند). KV اتمی نیست؛
+    // این قفل بهترین تلاش است (مستند در ممیزی — P3 باقیمانده).
+    const locked = await acquireUsdSendLock(env.STATE);
+    if (!locked) {
+      const result = await record("suppressed", "DUPLICATE_RUN_LOCKED");
+      logWarn("job.usd", { status: result.status, reason: result.reason });
       return result;
     }
-    await setUsdMessageId(env.STATE, sent.messageId);
-    return null;
+    try {
+      // اولین اجرا: ساخت «پیام ثابت» و ذخیره id آن
+      const sent = await tg.sendMessage(target, text, { parseMode: "HTML" });
+      if (!sent.ok || sent.messageId === undefined) {
+        const result = await record("send-error", sent.error);
+        logWarn("job.usd", { status: result.status, reason: sent.error });
+        return result;
+      }
+      await setUsdMessageId(env.STATE, sent.messageId);
+      return null;
+    } finally {
+      await releaseUsdSendLock(env.STATE);
+    }
   }
 
   // اجراهای بعدی: ویرایش همان پیام — پیام جدیدی ساخته نمی‌شود

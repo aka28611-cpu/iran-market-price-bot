@@ -190,6 +190,49 @@ export async function readLastReport(
   return readJson<MarketReport>(kv, LAST_REPORT_KEY);
 }
 
+// ---------- قفل مشاوره‌ای (جلوگیری از ارسال تکراری در اجرای هم‌زمان) ----------
+
+/**
+ * Cloudflare Cron Triggers «حداقل یکبار» اجرا را تضمین میکنند و در رخدادهای
+ * زیرساختی ممکن است اجرای تکراری/هم‌زمان رخ دهد. KV قفل اتمی ندارد
+ * (eventual consistency) — این قفل «بهترین تلاش» (best-effort) است و
+ * پنجرهٔ race ارسال اولین پیام را از ثانیهها به تأخیر انتشار KV
+ * (میلی‌ثانیهها) می‌راند. راه‌حل اتمی واقعی Durable Objects است (خارج از
+ * دامنهٔ این پروژه — در README/ممیزی مستند شده).
+ *
+ * TTL حداقل KV ۶۰ ثانیه است → قفل ۶۰ ثانیه‌ای: کوتاه‌تر از فاصلهٔ cron
+ * ۵ دقیقه‌ای، بلندتر از یک فراخوانی تلگرام.
+ */
+export const USD_SEND_LOCK_KEY = "lock:usd:send";
+
+/**
+ * تلاش برای گرفتن قفل ارسال. true = قفل گرفته شد (اجازه ادامه)؛
+ * false = اجرای دیگری در جریان است (این اجرا باید نادیده گرفته شود).
+ * خطای KV → true (قفل مشورتی نباید انتشار سالم را بلاک کند).
+ */
+export async function acquireUsdSendLock(
+  kv: KVLike,
+  ttlSeconds = 60,
+): Promise<boolean> {
+  try {
+    const existing = await kv.get(USD_SEND_LOCK_KEY);
+    if (existing !== null) return false;
+    await kv.put(USD_SEND_LOCK_KEY, "1", { expirationTtl: ttlSeconds });
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+/** آزادسازی قفل — خطا عمداً بلعیده میشود (TTL پشتیبان است) */
+export async function releaseUsdSendLock(kv: KVLike): Promise<void> {
+  try {
+    await kv.delete(USD_SEND_LOCK_KEY);
+  } catch {
+    // ignore — TTL 60s خودش پاک میکند
+  }
+}
+
 // ---------- Allowlist کاربران مجاز ----------
 
 /** سقف تعداد کاربران مجاز (بازه نوشتن‌های read-modify-write را مهار می‌کند) */

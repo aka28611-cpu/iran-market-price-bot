@@ -105,3 +105,81 @@ describe("parseEnv — لینکهای عمومی اختیاری (CHANNEL_LINK / 
     expect(parsed.PRICE_PROVIDER).toBe("stub");
   });
 });
+
+describe("parseEnv — اعتبارسنجی متقاطع (متغیرهای اختیاری)", () => {
+  it("غایب → پیش‌فرضهای امن: فعال، آستانه‌های ۲.۵/۵/۳، URLهای مرجع پیش‌فرض", () => {
+    const raw = makeRawEnv();
+    const parsed = parseEnv(raw);
+    expect(parsed.CROSS_CHECK_ENABLED).toBe(true);
+    expect(parsed.CROSS_CHECK_FX_TOLERANCE_PCT).toBe(2.5);
+    expect(parsed.CROSS_CHECK_GOLD_TOLERANCE_PCT).toBe(5);
+    expect(parsed.CROSS_CHECK_TETHER_TOLERANCE_PCT).toBe(3);
+    expect(parsed.TGJU_REFERENCE_URL).toBe("https://call1.tgju.org/ajax.json");
+    expect(parsed.WALLEX_MARKETS_URL).toBe(
+      "https://api.wallex.ir/v1/depth?symbol=USDTTMN",
+    );
+  });
+
+  it("CROSS_CHECK_ENABLED=false / 0 → غیرفعال", () => {
+    for (const v of ["false", "0"]) {
+      const parsed = parseEnv(makeRawEnv({ CROSS_CHECK_ENABLED: v }));
+      expect(parsed.CROSS_CHECK_ENABLED).toBe(false);
+    }
+  });
+
+  it("CROSS_CHECK_ENABLED نامعتبر → EnvError (غلط تایپی = خطای بلند)", () => {
+    try {
+      parseEnv(makeRawEnv({ CROSS_CHECK_ENABLED: "yes" }));
+      expect.unreachable("باید EnvError پرتاب شود");
+    } catch (err) {
+      const e = err as EnvError;
+      expect(e.invalid).toContain("CROSS_CHECK_ENABLED");
+    }
+  });
+
+  it("آستانهٔ نامعتبر (صفر/منفی/بیش از ۵۰/غیر عددی) → EnvError", () => {
+    for (const v of ["0", "-1", "51", "abc"]) {
+      try {
+        parseEnv(
+          makeRawEnv({ CROSS_CHECK_FX_TOLERANCE_PCT: v }),
+        );
+        expect.unreachable(`باید EnvError پرتاب شود: ${v}`);
+      } catch (err) {
+        const e = err as EnvError;
+        expect(e.invalid).toContain("CROSS_CHECK_FX_TOLERANCE_PCT");
+      }
+    }
+  });
+
+  it("آستانهٔ معتبر override میشود", () => {
+    const parsed = parseEnv(
+      makeRawEnv({
+        CROSS_CHECK_FX_TOLERANCE_PCT: "1.5",
+        CROSS_CHECK_GOLD_TOLERANCE_PCT: "8",
+      }),
+    );
+    expect(parsed.CROSS_CHECK_FX_TOLERANCE_PCT).toBe(1.5);
+    expect(parsed.CROSS_CHECK_GOLD_TOLERANCE_PCT).toBe(8);
+  });
+
+  it("URL مرجع غیر https / با credential → EnvError", () => {
+    for (const v of ["http://call1.tgju.org/ajax.json", "ftp://x/y", "https://u:p@tgju.example/x"]) {
+      try {
+        parseEnv(makeRawEnv({ TGJU_REFERENCE_URL: v }));
+        expect.unreachable(`باید EnvError پرتاب شود: ${v}`);
+      } catch (err) {
+        const e = err as EnvError;
+        expect(e.invalid).toContain("TGJU_REFERENCE_URL");
+      }
+    }
+  });
+
+  it("URL مرجع معتبر override میشود", () => {
+    const parsed = parseEnv(
+      makeRawEnv({ WALLEX_MARKETS_URL: "https://api.wallex.example/v1/depth" }),
+    );
+    expect(parsed.WALLEX_MARKETS_URL).toBe(
+      "https://api.wallex.example/v1/depth",
+    );
+  });
+});

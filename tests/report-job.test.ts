@@ -9,6 +9,7 @@ import {
   fakeProvider,
   makeEnv,
   MockKV,
+  sentMessages,
   telegramRecorder,
 } from "./helpers";
 
@@ -64,9 +65,13 @@ describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => 
       provider: fakeProvider(null, REPORT),
     });
     expect(result.status).toBe("ok");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.body.chat_id).toBe(CHANNEL_ID);
-    const text = String(calls[0]?.body.text);
+    // فقط تماسهای تلگرام شمرده میشوند — اعتبارسنجی متقاطع هم fetch دارد
+    // (مرجعهای TGJU/Wallex از طریق همان fetchFn تزریقشده به recorder میروند
+    // و پاسخ تلگرام-شکل برمیگردانند → مرجع نامعتبر → چک advisory بدون حذف)
+    const sent = sentMessages(calls);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body.chat_id).toBe(CHANNEL_ID);
+    const text = String(sent[0]?.body.text);
     expect(text).toContain("دلار: ۲۵۳٬۰۰۰");
     expect(text).toContain("سکه امامی: ۹۲٬۰۰۰٬۰۰۰");
     expect(text).not.toContain("یورو:"); // نبود داده
@@ -90,7 +95,8 @@ describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => 
     });
     expect(result.status).toBe("invalid");
     expect(result.reason).toBe("NO_VALID_ITEMS");
-    expect(calls).toHaveLength(0);
+    // هیچ تماس تلگرامی نبود (دو تماس مرجع cross-check ممکن است ثبت شده باشد)
+    expect(sentMessages(calls)).toHaveLength(0);
   });
 
   it("خطای ارسال → send-error بدون throw", async () => {

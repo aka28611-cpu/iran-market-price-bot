@@ -18,11 +18,25 @@ compatibility_date = "2025-09-15"
 PRICE_PROVIDER = "jahankhahan"
 PRICE_API_BASE_URL = "https://nerkh.jahankhahan.shop/data/live.json"
 
+# --- اعتبارسنجی متقاطع (بند ۳ مأموریت ۲۰۲۶-۱۰-۱۱) ---
+# مقایسهٔ منبع اصلی با مرجع قبل از انتشار مقدار «تغییرکرده».
+# مرجعها: TGJU (call1.tgju.org/ajax.json — عمومی/رایگان) برای ارز/طلا/سکه،
+# Wallex (depth USDTTMN — دفتر سفارش صرافی، مستقل) برای تتر.
+# مرجع در دسترس نباشد → چک advisory (انتشار ادامه؛ لاگ ثبت میشود).
+# اختلاف بیش از آستانه → عدم انتشار آن داده + دلیل در status KV.
+# غایب = پیش‌فرض (آستانه‌ها بر اساس نوسان طبیعی گروه بازار: ارز/طلا/تتر).
+CROSS_CHECK_ENABLED = "true"
+CROSS_CHECK_FX_TOLERANCE_PCT = "2.5"
+CROSS_CHECK_GOLD_TOLERANCE_PCT = "5"
+CROSS_CHECK_TETHER_TOLERANCE_PCT = "3"
+
 # Cron Triggers:
-#   "* * * * *"   → هر ۱ دقیقه: بروزرسانی پیام ثابت دلار (editMessageText)
-#   "0 */6 * * *" → هر ۶ ساعت: گزارش کامل بازار (sendMessage)
+#   "*/5 * * * *"  → هر ۵ دقیقه: دلار+تتر (فقط در ساعت باز بازار fetch میکند؛
+#                    CLOSED → کش + نشان بسته؛ داده بی‌تغییر = بدون تماس تلگرام)
+#   "0 */6 * * *"  → هر ۶ ساعت: گزارش کامل بازار (ارزها/طلا/سکه‌ها — sendMessage)
+# سقف پلتفرم: ۵ trigger per account (پلن رایگان) — فقط ۲ استفاده میشود.
 [triggers]
-crons = ["* * * * *", "0 */6 * * *"]
+crons = ["*/5 * * * *", "0 */6 * * *"]
 
 # KV برای وضعیت ربات (message_id پیام ثابت، فلگ pause، آخرین قیمت‌ها، وضعیت اجرا)
 # round 15: namespace تازه 6d13a5b3… (سالم و بدون state قدیمی).

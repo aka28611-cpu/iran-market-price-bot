@@ -79,6 +79,13 @@ export function makeRawEnv(
     PRICE_API_KEY: "",
     CHANNEL_LINK: "",
     SUPPORT_LINK: "",
+    // cross-check: خالی = پیش‌فرض (فعال؛ آستانه‌ها از کد)
+    CROSS_CHECK_ENABLED: "",
+    CROSS_CHECK_FX_TOLERANCE_PCT: "",
+    CROSS_CHECK_GOLD_TOLERANCE_PCT: "",
+    CROSS_CHECK_TETHER_TOLERANCE_PCT: "",
+    TGJU_REFERENCE_URL: "",
+    WALLEX_MARKETS_URL: "",
     STATE: new MockKV(),
     ...overrides,
   };
@@ -96,10 +103,29 @@ export function makeEnv(overrides: Partial<Env> = {}): Env {
     PRICE_API_KEY: "",
     CHANNEL_LINK: "",
     SUPPORT_LINK: "",
+    CROSS_CHECK_ENABLED: true,
+    CROSS_CHECK_FX_TOLERANCE_PCT: 2.5,
+    CROSS_CHECK_GOLD_TOLERANCE_PCT: 5,
+    CROSS_CHECK_TETHER_TOLERANCE_PCT: 3,
+    TGJU_REFERENCE_URL: "https://call1.tgju.org/ajax.json",
+    WALLEX_MARKETS_URL:
+      "https://api.wallex.ir/v1/depth?symbol=USDTTMN",
     STATE: new MockKV(),
     ...overrides,
   };
-  return parseEnv(makeRawEnv({ ...env, ADMIN_USER_ID: String(env.ADMIN_USER_ID) }));
+  // مقادیر عددی/بولی به رشته تبدیل میشوند تا parseEnv همان مسیر production را بگذرد
+  return parseEnv(
+    makeRawEnv({
+      ...env,
+      ADMIN_USER_ID: String(env.ADMIN_USER_ID),
+      CROSS_CHECK_ENABLED: String(env.CROSS_CHECK_ENABLED),
+      CROSS_CHECK_FX_TOLERANCE_PCT: String(env.CROSS_CHECK_FX_TOLERANCE_PCT),
+      CROSS_CHECK_GOLD_TOLERANCE_PCT: String(env.CROSS_CHECK_GOLD_TOLERANCE_PCT),
+      CROSS_CHECK_TETHER_TOLERANCE_PCT: String(env.CROSS_CHECK_TETHER_TOLERANCE_PCT),
+      TGJU_REFERENCE_URL: env.TGJU_REFERENCE_URL,
+      WALLEX_MARKETS_URL: env.WALLEX_MARKETS_URL,
+    }),
+  );
 }
 
 export function makeExecutionContext() {

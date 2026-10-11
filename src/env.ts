@@ -1,9 +1,16 @@
+import {
+  TGJU_DEFAULT_URL,
+  WALLEX_DEPTH_DEFAULT_URL,
+} from "./providers/cross-check";
+
 /**
  * اعتبارسنجی fail-closed متغیرهای محیطی.
  *
  * قواعد:
  *  • هر متغیر مفقود/نامعتبر → EnvError با «نام» متغیرها (هرگز مقدار).
  *  • هیچ مقدار پیش‌فرض حساسی جایگزین نمی‌شود؛ env ناقص = عدم اجرا.
+ *  • متغیرهای cross-check اختیاریاند: غایب = پیش‌فرض امن؛ موجودِ خراب =
+ *    EnvError (غلط تایپی پیکربندی باید بلند شکست بخورد، نه بی‌صدا کار کند).
  */
 
 /** حداقل رابط موردنیاز از KV binding (برای تست‌پذیری) */
@@ -37,6 +44,19 @@ export interface Env {
   CHANNEL_LINK: string;
   /** لینک خارجی پشتیبانی — اختیاری؛ غایب = سیستم تیکت داخلی ربات */
   SUPPORT_LINK: string;
+  // --- Vars (اعتبارسنجی متقاطع — اختیاری، غیر حساس) ---
+  /** فعال بودن مقایسهٔ منبع با مرجع مستقل (پیش‌فرض: فعال) */
+  CROSS_CHECK_ENABLED: boolean;
+  /** آستانهٔ اختلاف ارزها — درصد (پیش‌فرض ۲.۵) */
+  CROSS_CHECK_FX_TOLERANCE_PCT: number;
+  /** آستانهٔ اختلاف طلا/سکه — درصد (پیش‌فرض ۵) */
+  CROSS_CHECK_GOLD_TOLERANCE_PCT: number;
+  /** آستانهٔ اختلاف تتر — درصد (پیش‌فرض ۳) */
+  CROSS_CHECK_TETHER_TOLERANCE_PCT: number;
+  /** مرجع TGJU (پیش‌فرض: call1.tgju.org/ajax.json) */
+  TGJU_REFERENCE_URL: string;
+  /** مرجع تتر Wallex (پیش‌فرض: depth USDTTMN) */
+  WALLEX_MARKETS_URL: string;
   // --- Bindings ---
   STATE: KVLike;
 }
@@ -112,6 +132,55 @@ export function parseEnv(raw: unknown): Env {
   const CHANNEL_LINK = normalizeLink("CHANNEL_LINK");
   const SUPPORT_LINK = normalizeLink("SUPPORT_LINK");
 
+  // --- اعتبارسنجی متقاطع (اختیاری؛ غایب = پیش‌فرض، خراب = خطا) ---
+  const parseTolerance = (key: string, fallback: number): number => {
+    const raw = str(key);
+    if (!raw) return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0 || n > 50) {
+      invalid.push(key);
+      return fallback;
+    }
+    return n;
+  };
+  const enabledRaw = str("CROSS_CHECK_ENABLED").trim().toLowerCase();
+  if (enabledRaw !== "" && !["true", "false", "1", "0"].includes(enabledRaw)) {
+    invalid.push("CROSS_CHECK_ENABLED");
+  }
+  const CROSS_CHECK_ENABLED =
+    enabledRaw === "" ? true : ["true", "1"].includes(enabledRaw);
+  const CROSS_CHECK_FX_TOLERANCE_PCT = parseTolerance(
+    "CROSS_CHECK_FX_TOLERANCE_PCT",
+    2.5,
+  );
+  const CROSS_CHECK_GOLD_TOLERANCE_PCT = parseTolerance(
+    "CROSS_CHECK_GOLD_TOLERANCE_PCT",
+    5,
+  );
+  const CROSS_CHECK_TETHER_TOLERANCE_PCT = parseTolerance(
+    "CROSS_CHECK_TETHER_TOLERANCE_PCT",
+    3,
+  );
+  const parseHttpsUrl = (key: string, fallback: string): string => {
+    const raw = str(key);
+    if (!raw) return fallback;
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "https:" || url.username !== "" || url.password !== "") {
+        throw new Error("not acceptable");
+      }
+      return raw;
+    } catch {
+      invalid.push(key);
+      return fallback;
+    }
+  };
+  const TGJU_REFERENCE_URL = parseHttpsUrl("TGJU_REFERENCE_URL", TGJU_DEFAULT_URL);
+  const WALLEX_MARKETS_URL = parseHttpsUrl(
+    "WALLEX_MARKETS_URL",
+    WALLEX_DEPTH_DEFAULT_URL,
+  );
+
   const STATE = record["STATE"] as KVLike | undefined;
   if (
     !STATE ||
@@ -136,6 +205,12 @@ export function parseEnv(raw: unknown): Env {
     PRICE_API_BASE_URL,
     CHANNEL_LINK,
     SUPPORT_LINK,
+    CROSS_CHECK_ENABLED,
+    CROSS_CHECK_FX_TOLERANCE_PCT,
+    CROSS_CHECK_GOLD_TOLERANCE_PCT,
+    CROSS_CHECK_TETHER_TOLERANCE_PCT,
+    TGJU_REFERENCE_URL,
+    WALLEX_MARKETS_URL,
     STATE: STATE as KVLike,
   };
 }

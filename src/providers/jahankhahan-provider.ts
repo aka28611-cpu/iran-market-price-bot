@@ -35,12 +35,17 @@ import type { PriceProvider } from "./provider";
  *  • URL با credential رد میشود
  *
  * فیلدهای «تأییدنشده» (طبق دستور مالک پروژه — مرحله آمادهسازی provider):
- *  • rates.mesghal  → status "UNKNOWN"          (semantics با فرمول استاندارد
+ *  • rates.mesghal  → status "UNKNOWN"  (semantics با فرمول استاندارد
  *    4.6083×gold24 سازگار نیست؛ تا تأیید منبع در گزارش production نمایش نمییابد)
- *  • rates.coin     → status "UNVERIFIED_COIN"  (کلید عمومی؛ انتساب قطعی به
- *    سکه امامی مجاز نیست؛ تا تأیید منبع در گزارش production نمایش نمییابد)
- *  این دو فیلد در parse نتیجه حاضرند (برای تأیید آینده) اما هرگز وارد
- *  items گزارش نمیشوند؛ بنابراین فرمتر پیام تلگرام هرگز آنها را رندر نمیکند.
+ *
+ * ارتقای تأیید (۲۰۲۶-۱۰-۱۱ — مأموریت ممیزی):
+ *  • rates.coin → symbol "emami" به فیلدهای «تأییدشده» منتقل شد.
+ *    شاهد: در سه نمونهٔ زندهٔ مستقل، مقدار rates.jahankhahan.coin دقیقاً
+ *    با نماد TGJU «sekee» (سکه امامی، ریال/۱۰ = تومان) برابر بود
+ *    (۲۶۹٬۳۱۰٬۰۰۰ تومان — اختلاف ۰.۰۰۰٪). نگاشت سخت‌گیرانه نگه داشته
+ *    میشود و اعتبارسنجی متقاطع گزارش (src/providers/cross-check.ts)
+ *    پیش از انتشار هر بار آن را با sekee مقایسه میکند؛ اختلاف غیرعادی =
+ *    حذف از گزارش (fail-closed).
  *
  * rates.tether (۱۴۰۵/۰۷ — بازطراحی قالب پیام عمومی):
  *  • نرخ تتر (تومان) بهعنوان دادهٔ «مستقل» از دلار — مقدار آن در منبع با
@@ -158,7 +163,8 @@ interface FieldMapping {
   unit: "toman" | "usd";
 }
 
-/** فیلدهای تأییدشده — قابل انتشار در گزارش production */
+/** فیلدهای تأییدشده — قابل انتشار در گزارش production
+ *  (coin→emami: تأیید متقاطع با TGJU sekee — ۲۰۲۶-۱۰-۱۱؛ چک پایدار در cross-check) */
 const VERIFIED_FIELD_MAPPINGS: readonly FieldMapping[] = [
   { key: "dollar", symbol: "usd", unit: "toman" },
   { key: "tether", symbol: "usdt", unit: "toman" },
@@ -168,6 +174,7 @@ const VERIFIED_FIELD_MAPPINGS: readonly FieldMapping[] = [
   { key: "aed", symbol: "aed", unit: "toman" },
   { key: "gold", symbol: "gold18k", unit: "toman" },
   { key: "gold24", symbol: "gold24k", unit: "toman" },
+  { key: "coin", symbol: "emami", unit: "toman" },
   { key: "bahar", symbol: "bahar", unit: "toman" },
   { key: "half", symbol: "halfCoin", unit: "toman" },
   { key: "quarter", symbol: "quarterCoin", unit: "toman" },
@@ -175,7 +182,7 @@ const VERIFIED_FIELD_MAPPINGS: readonly FieldMapping[] = [
 ];
 
 /** وضعیت فیلد تأییدنشده — نگه داشته میشود اما منتشر نمیشود */
-export type UnverifiedStatus = "UNKNOWN" | "UNVERIFIED_COIN";
+export type UnverifiedStatus = "UNKNOWN";
 
 export interface JahankhahanUnverifiedField {
   /** کلید خام در منبع */
@@ -201,13 +208,6 @@ const UNVERIFIED_FIELD_MAPPINGS: readonly {
     status: "UNKNOWN",
     reason:
       "semantics مثقال با فرمول استاندارد (۴.۶۰۸۳×طلای۲۴) سازگار نیست — تا تأیید منبع نمایش داده نمیشود",
-  },
-  {
-    key: "coin",
-    symbol: "emami",
-    status: "UNVERIFIED_COIN",
-    reason:
-      "کلید عمومی coin — انتساب قطعی به سکه امامی مجاز نیست؛ تا تأیید منبع نمایش داده نمیشود",
   },
 ];
 

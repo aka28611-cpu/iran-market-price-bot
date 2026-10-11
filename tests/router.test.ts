@@ -137,11 +137,11 @@ describe("سطح HTTP — حداقلی و امن", () => {
 });
 
 describe("scheduled — dispatch بر اساس cron", () => {
-  it("cron هر ۱ دقیقه → اجرای جاب دلار (stub → no-data، بدون انتشار)", async () => {
+  it("cron هر ۵ دقیقه → اجرای جاب دلار (stub → no-data، بدون انتشار)", async () => {
     const kv = new MockKV();
     const env = makeRawEnv({ STATE: kv });
     await worker.scheduled(
-      { cron: "* * * * *" } as unknown as ScheduledEvent,
+      { cron: "*/5 * * * *" } as unknown as ScheduledEvent,
       env,
       makeExecutionContext().ctx,
     );
@@ -164,7 +164,7 @@ describe("scheduled — dispatch بر اساس cron", () => {
   it("env نامعتبر در scheduled → هیچ جابی اجرا نمی‌شود", async () => {
     const kv = new MockKV();
     await worker.scheduled(
-      { cron: "* * * * *" } as unknown as ScheduledEvent,
+      { cron: "*/5 * * * *" } as unknown as ScheduledEvent,
       { STATE: kv },
       makeExecutionContext().ctx,
     );
