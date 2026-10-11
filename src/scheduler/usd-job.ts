@@ -23,10 +23,11 @@ import {
 } from "../telegram/format";
 import {
   acquireUsdSendLock,
-  getUsdMessageId,
   isPaused,
   LAST_USD_PRICE_KEY,
+  markUsdLastEvent,
   readLastUsdPrice,
+  readUsdLastEvent,
   recordRunStatusIfChanged,
   readJson,
   releaseUsdSendLock,
@@ -45,25 +46,29 @@ import {
 } from "../validation";
 
 /**
- * جاب هر ۵ دقیقه (عبارت cron با گام ۵ دقیقه) — بروزرسانی «پیام ثابت»
- * دلار با editMessageText. ساعات fetch/انتشار واقعی با منطق بازار
- * (market-hours) تعیین میشود؛ اجرای ۵ دقیقه‌ای در بازار بسته فقط کش را
- * با نشان «بسته» نشان میدهد و دادهٔ بی‌تغییر هیچ تماسی با تلگرام نمیگیرد.
+ * جاب هر ۵ دقیقه (عبارت cron با گام ۵ دقیقه) — «پیام جدید» در هر اجرای
+ * معتبر (دستور مالک ۲۰۲۶-۱۰-۱۱ / راند ۲۸):
+ *  • هر اجرای زمان‌بندی‌شدهٔ معتبر → یک پیام جدید با sendMessage.
+ *  • پیام‌های قبلی هرگز ویرایش (editMessageText) یا حذف نمی‌شوند.
+ *  • حتی با قیمت یکسان، اجرای معتبر بعدی باز هم پیام جدید می‌سازد.
+ *  • اجرای مجدد «همان رویداد» (scheduledTime یکسان) پیام مضاعف
+ *    نمی‌سازد (گارد usd:last_event + قفل مشورتی KV).
+ *  • ساعات fetch/انتشار واقعی با منطق بازار (market-hours) تعیین می‌شود.
  *
  * دو مسیر داده (هر دو fail-closed):
  *  ۱) میز خرید/فروش (provider فردایی): fetchUsdTehran → خرید/فروش/معامله
  *  ۲) منابع تک‌نرخی (مثل jahankhahan): fetchMarketReport → نرخ واحد دلار
- *     — خرید=فروش از نرخ واحد «ساخته نمیشود»؛ فقط همان یک نرخ واقعی.
+ *     — خرید=فروش از نرخ واحد «ساخته نمی‌شود»؛ فقط همان یک نرخ واقعی.
  *
  * صرفه‌جویی KV (free plan: ۱۰۰۰ نوشتن/روز):
- *  • وضعیت اجرا فقط در تغییر مینویسد (recordRunStatusIfChanged)
- *  • متن/دادهٔ پیام ثابت فقط وقتی مینویسد که تغییر کند
- *  • ویرایش پیام وقتی متن تغییر نکرده انجام نمیشود (نه خطای not-modified، نه اسپم)
+ *  • وضعیت اجرا فقط در تغییر می‌نویسد (recordRunStatusIfChanged)
+ *  • متن/دادهٔ ذخیره‌شده فقط وقتی می‌نویسد که تغییر کند
+ *    (id رویداد و id آخرین پیام در هر ارسال موفق نوشته می‌شوند)
  *
- *  • ساعت بازار UNKNOWN → هیچ چیزی منتشر نمیشود (قیمت مشکوک ممنوع)
- *  • بازار CLOSED → provider صدا زده نمیشود؛ فقط «آخرین داده معتبر»
- *    کش‌شده با نشان «بازار بسته» نمایش داده میشود
- *  • هیچ مقدار جایگزین (fallback) ارسال نمیشود
+ *  • ساعت بازار UNKNOWN → هیچ چیزی منتشر نمی‌شود (قیمت مشکوک ممنوع)
+ *  • بازار CLOSED → provider صدا زده نمی‌شود؛ فقط در «گذار» به بسته
+ *    شدن یک پیام با «آخرین دادهٔ معتبر» + نشان «بازار بسته» ارسال می‌شود
+ *  • هیچ مقدار جایگزین (fallback) ارسال نمی‌شود
  */
 
 /**
@@ -87,6 +92,12 @@ export interface JobDeps {
   provider?: PriceProvider;
   /** override ساعت بازار برای تست (پیش‌فرض: src/market-hours.ts) */
   marketHours?: MarketHoursConfig;
+  /**
+   * scheduledTime رویداد Cron (epoch ms از event.scheduledTime).
+   * اجرای مجدد «همان رویداد» → پیام مضاعف ساخته نمی‌شود؛ رویداد بعدی
+   * (متفاوت) همیشه پیام جدید می‌سازد. غایب (فراخوانی دستی) → فقط قفل.
+   */
+  scheduledTime?: number;
 }
 
 export type JobStatus =
@@ -95,7 +106,6 @@ export type JobStatus =
   | "no-data"
   | "invalid"
   | "send-error"
-  | "edit-error"
   | "provider-error"
   | "market-closed"
   | "market-unknown"
@@ -109,9 +119,7 @@ export interface JobResult {
 export function describeJobResult(result: JobResult): string {
   switch (result.status) {
     case "ok":
-      return result.reason === "UNCHANGED"
-        ? "✅ قیمت بدون تغییر است — پیام کانال بهروز است."
-        : "✅ پیام دلار در کانال بروزرسانی شد.";
+      return "✅ پیام دلار جدید در کانال منتشر شد.";
     case "paused":
       return "⏸ انتشار متوقف است؛ با /resume ادامه دهید.";
     case "no-data":
@@ -120,16 +128,14 @@ export function describeJobResult(result: JobResult): string {
       return `⚠️ داده نامعتبر بود (${result.reason ?? "?"}) — چیزی منتشر نشد.`;
     case "send-error":
       return `❌ خطا در ارسال پیام به کانال: ${result.reason ?? "?"}`;
-    case "edit-error":
-      return `❌ خطا در ویرایش پیام: ${result.reason ?? "?"}`;
     case "provider-error":
       return `❌ خطای provider: ${result.reason ?? "?"}`;
     case "market-closed":
-      return "🌙 بازار بسته است — پیام ثابت با «آخرین قیمت معتبر» بروزرسانی شد.";
+      return "🌙 بازار بسته است — پیام با «آخرین قیمت معتبر» ارسال شد.";
     case "market-unknown":
       return "❓ وضعیت ساعت بازار نامشخص است — برای امنیت هیچ چیزی منتشر نشد.";
     case "suppressed":
-      return "⏱ اجرای هم‌زمان/تکراری دیگری در جریان بود — این اجرا برای جلوگیری از پیام تکراری نادیده گرفته شد.";
+      return "⏱ اجرای تکراری (هم‌زمان یا مجددِ همان رویداد) — برای جلوگیری از پیام مضاعف نادیده گرفته شد.";
   }
 }
 
@@ -195,15 +201,16 @@ export async function runUsdRefresh(
       }
 
       const text = formatUsdMessage(price);
-      const unchanged = text === (await readJson<string>(env.STATE, PIN_TEXT_KEY));
-      if (unchanged) {
-        const result = await record("ok", "UNCHANGED");
-        return result;
-      }
-      const published = await publishPinnedMessage(env, deps, text, record);
+      // مدل پیام جدید (راند ۲۸): هر اجرای معتبر پیام جدید می‌سازد — حتی
+      // با قیمت یکسان؛ پیام قبلی هرگز ویرایش نمی‌شود.
+      const lastPinText = await readJson<string>(env.STATE, PIN_TEXT_KEY);
+      const published = await sendChannelMessage(env, deps, text, record);
       if (published) return published;
-      await writeJson(env.STATE, PIN_TEXT_KEY, text);
-      await writeJson(env.STATE, LAST_USD_PRICE_KEY, price);
+      // KV فقط در تغییر می‌نویسد (سقف نوشتن روزانه)
+      if (text !== lastPinText) {
+        await writeJson(env.STATE, PIN_TEXT_KEY, text);
+        await writeJson(env.STATE, LAST_USD_PRICE_KEY, price);
+      }
       const result = await record("ok");
       logInfo("job.usd", { status: result.status, provider: provider.name });
       return result;
@@ -265,16 +272,13 @@ async function refreshSingleRate(
   );
   const tether = tetherItem?.value ?? null;
 
-  const text = formatPinnedUsdSingleRate(usdItem.value, tether, false);
-  const unchanged = text === (await readJson<string>(env.STATE, PIN_TEXT_KEY));
-  if (unchanged) {
-    const result = await record("ok", "UNCHANGED");
-    return result;
-  }
+  // مدل پیام جدید (راند ۲۸): حتی با قیمت یکسان پیام جدید ارسال می‌شود؛
+  // این خواندن فقط برای «نوشتن در تغییر» (سقف KV) است — گیتِ ارسال نیست.
+  const lastPinText = await readJson<string>(env.STATE, PIN_TEXT_KEY);
 
   // ---- اعتبارسنجی متقاطع (بند ۳ مأموریت + دستور مالک ۲۰۲۶-۱۰-۱۱) ----
-  // فقط برای مقدار «در حال انتشار» اجرا میشود (صرفهٔ درخواست: دادهٔ
-  // بی‌تغییر از قبل بالادست چک شده و UNCHANGED است).
+  // در هر انتشار اجرا می‌شود (هر اجرای معتبر = پیام جدید؛ قیمت یکسان هم
+  // باید قبل از انتشار مجدد اعتبارسنجی شود).
   //  • دلار diverged → کل انتشار بلاک + دلیل در status (نرخ مشکوک ممنوع)
   //  • تتر diverged → فقط خط تتر حذف میشود (دادهٔ مشکوک حذف، نه کل پیام)
   //  • تتر بدون مرجع Wallex معتبر → خط تتر منتشر نمیشود (fail-closed؛
@@ -364,25 +368,19 @@ async function refreshSingleRate(
   }
 
   const finalText = formatPinnedUsdSingleRate(publishUsd, publishTether, false);
-  // نتیجهٔ نهایی = متن پیام فعلی کانال (مثلاً حذف خط تتر در پیامی که
-  // از قبل خط تتر ندارد) → هیچ تماسی با تلگرام لازم نیست (پیام تکراری
-  // یا ویرایش بی‌اثر با خطای «message is not modified» ساخته نمیشود).
-  if (finalText === (await readJson<string>(env.STATE, PIN_TEXT_KEY))) {
-    const result = await record("ok", "UNCHANGED_AFTER_CROSS_CHECK");
-    logInfo("job.usd", { status: result.status, reason: result.reason });
-    return result;
-  }
-  const published = await publishPinnedMessage(env, deps, finalText, record);
+  const published = await sendChannelMessage(env, deps, finalText, record);
   if (published) return published;
 
-  // نوشتن فقط در تغییر (صرفه‌جویی سقف KV)
-  await writeJson(env.STATE, PIN_TEXT_KEY, finalText);
-  const pinnedData: PinnedUsdSingleRate = {
-    value: publishUsd,
-    dataDate: report.dataDate,
-    ...(publishTether !== null ? { tether: publishTether } : {}),
-  };
-  await writeJson(env.STATE, PIN_DATA_KEY, pinnedData);
+  // نوشتن فقط در تغییر (صرفهٔ سقف KV) — پیام جدید در هر اجرا ارسال می‌شود
+  if (finalText !== lastPinText) {
+    await writeJson(env.STATE, PIN_TEXT_KEY, finalText);
+    const pinnedData: PinnedUsdSingleRate = {
+      value: publishUsd,
+      dataDate: report.dataDate,
+      ...(publishTether !== null ? { tether: publishTether } : {}),
+    };
+    await writeJson(env.STATE, PIN_DATA_KEY, pinnedData);
+  }
   const result = await record("ok", okReason);
   logInfo("job.usd", {
     status: result.status,
@@ -395,9 +393,10 @@ async function refreshSingleRate(
 }
 
 /**
- * بازار بسته: provider صدا زده نمیشود (بدون fetch جدید)؛
- * پیام ثابت با «آخرین داده معتبر» کش‌شده + نشان بسته بودن بروزرسانی
- * میشود. نبود/خرابی کش = عدم انتشار (هیچ مقدار جایگزین ساخته نمی‌شود).
+ * بازار بسته: provider صدا زده نمی‌شود (بدون fetch جدید)؛ فقط در «گذار»
+ * به بسته شدن یک پیام جدید با «آخرین دادهٔ معتبر» + نشان بسته ارسال
+ * می‌شود (اجراهای بستهٔ بعدی چیزی نمی‌فرستند — دادهٔ کهنه اسپم نمی‌شود).
+ * نبود/خرابی کش = عدم انتشار (هیچ مقدار جایگزین ساخته نمی‌شود).
  */
 async function refreshWhileMarketClosed(
   env: Env,
@@ -425,7 +424,7 @@ async function refreshWhileMarketClosed(
       const result = await record("market-closed", "UNCHANGED");
       return result;
     }
-    const published = await publishPinnedMessage(env, deps, text, record);
+    const published = await sendChannelMessage(env, deps, text, record);
     if (published) return published;
     await writeJson(env.STATE, PIN_TEXT_KEY, text);
     const result = await record("market-closed");
@@ -446,7 +445,7 @@ async function refreshWhileMarketClosed(
       const result = await record("market-closed", "UNCHANGED");
       return result;
     }
-    const published = await publishPinnedMessage(env, deps, text, record);
+    const published = await sendChannelMessage(env, deps, text, record);
     if (published) return published;
     await writeJson(env.STATE, PIN_TEXT_KEY, text);
     const result = await record("market-closed");
@@ -460,10 +459,22 @@ async function refreshWhileMarketClosed(
 }
 
 /**
- * انتشار/ویرایش «پیام ثابت» دلار — مقصد انتشار فقط از allowlist (CHANNEL_ID).
- * خروجی: null = موفق؛ غیر null = نتیجه ثبت‌شده خطا (send-error / edit-error).
+ * انتشار «پیام جدید» در کانال — مقصد انتشار فقط از allowlist (CHANNEL_ID).
+ *
+ * مدل پیام جدید (راند ۲۸): هر اجرای معتبر یک پیام تازه با sendMessage
+ * می‌سازد؛ پیام‌های قبلی هرگز ویرایش یا حذف نمی‌شوند.
+ *
+ * ضد پیام مضاعف (Cron Triggers «حداقل یک‌بار» اجرا می‌شوند):
+ *  ۱) گارد رویداد: scheduledTime مساوی آخرین رویداد پردازش‌شده →
+ *     suppressed (اجرای مجدد همان رویداد پیام تکراری نمی‌سازد)؛
+ *     رویداد بعدی (۵ دقیقه بعد) همیشه پیام جدید می‌سازد.
+ *  ۲) قفل مشورتی KV: اجرای هم‌زمان → suppressed (best-effort؛
+ *     KV اتمی نیست — مستند در ممیزی).
+ * رویداد قبل از side effect «پردازش‌شده» علامت می‌خورد؛ خطای ارسال با
+ * اجرای زمان‌بندی‌شدهٔ بعدی بازیابی می‌شود.
+ * خروجی: null = موفق؛ غیر null = نتیجهٔ ثبت‌شده خطا (send-error).
  */
-async function publishPinnedMessage(
+async function sendChannelMessage(
   env: Env,
   deps: JobDeps,
   text: string,
@@ -479,41 +490,44 @@ async function publishPinnedMessage(
   const tg = new TelegramClient(env.TELEGRAM_BOT_TOKEN, {
     fetchFn: deps.fetchFn,
   });
-  const messageId = await getUsdMessageId(env.STATE);
 
-  if (messageId === null) {
-    // اولین اجرا: قفل مشورتی KV — دو اجرای هم‌زمان نباید دو پیام ثابت
-    // بسازند (Cron Triggers «حداقل یکبار» اجرا میشوند). KV اتمی نیست؛
-    // این قفل بهترین تلاش است (مستند در ممیزی — P3 باقیمانده).
-    const locked = await acquireUsdSendLock(env.STATE);
-    if (!locked) {
-      const result = await record("suppressed", "DUPLICATE_RUN_LOCKED");
+  // گارد ۱ — اجرای مجدد همان رویداد Cron (scheduledTime یکسان):
+  // پیام مضاعف ساخته نمی‌شود؛ این گارد فقط «ارسال» را می‌پوشاند.
+  const eventTime = deps.scheduledTime;
+  if (typeof eventTime === "number" && Number.isFinite(eventTime)) {
+    const lastEvent = await readUsdLastEvent(env.STATE);
+    if (lastEvent !== null && lastEvent === eventTime) {
+      const result = await record("suppressed", "DUPLICATE_SAME_EVENT");
       logWarn("job.usd", { status: result.status, reason: result.reason });
       return result;
     }
-    try {
-      // اولین اجرا: ساخت «پیام ثابت» و ذخیره id آن
-      const sent = await tg.sendMessage(target, text, { parseMode: "HTML" });
-      if (!sent.ok || sent.messageId === undefined) {
-        const result = await record("send-error", sent.error);
-        logWarn("job.usd", { status: result.status, reason: sent.error });
-        return result;
-      }
-      await setUsdMessageId(env.STATE, sent.messageId);
-      return null;
-    } finally {
-      await releaseUsdSendLock(env.STATE);
-    }
   }
 
-  // اجراهای بعدی: ویرایش همان پیام — پیام جدیدی ساخته نمی‌شود
-  const edited = await tg.editMessageText(target, messageId, text, {
-    parseMode: "HTML",
-  });
-  if (!edited.ok) {
-    const result = await record("edit-error", edited.error);
-    logWarn("job.usd", { status: result.status, reason: edited.error });
+  // گارد ۲ — قفل مشورتی KV: دو اجرای هم‌زمان نباید دو پیام بسازند
+  // (KV اتمی نیست؛ این قفل بهترین تلاش است — مستند در ممیزی، P3).
+  const locked = await acquireUsdSendLock(env.STATE);
+  if (!locked) {
+    const result = await record("suppressed", "DUPLICATE_RUN_LOCKED");
+    logWarn("job.usd", { status: result.status, reason: result.reason });
     return result;
   }
-  return null;
+  try {
+    // رویداد را قبل از side effect علامت‌گذاری می‌کنیم: اجرای مجدد
+    // متوالیِ همان رویداد دیگر به sendMessage نمی‌رسد.
+    if (typeof eventTime === "number" && Number.isFinite(eventTime)) {
+      await markUsdLastEvent(env.STATE, eventTime);
+    }
+    const sent = await tg.sendMessage(target, text, { parseMode: "HTML" });
+    if (!sent.ok || sent.messageId === undefined) {
+      const result = await record("send-error", sent.error);
+      logWarn("job.usd", { status: result.status, reason: sent.error });
+      return result;
+    }
+    // آخرین پیام منتشرشده — فقط برای مشاهده/وریفای production؛
+    // هرگز برای ویرایش خوانده نمی‌شود.
+    await setUsdMessageId(env.STATE, sent.messageId);
+    return null;
+  } finally {
+    await releaseUsdSendLock(env.STATE);
+  }
 }

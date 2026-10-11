@@ -25,7 +25,7 @@ import {
 const NOW = () => new Date("2025-10-08T10:00:00Z");
 const FRESH = "2025-10-08T09:59:30Z";
 
-describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیام ثابت)", () => {
+describe("runUsdRefresh — جاب ۵ دقیقه (پیام جدید در هر اجرای معتبر)", () => {
   it("نبود داده (stub) → هیچ تماسی با تلگرام", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const result = await runUsdRefresh(makeEnv(), {
@@ -104,9 +104,9 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     expect(status.status).toBe("ok");
   });
 
-  it("اجراهای بعدی: همان پیام را edit می‌کند — پیام جدید نمی‌سازد", async () => {
+  it("اجراهای بعدی: پیام جدید می‌سازد — پیام قبلی هرگز ویرایش نمی‌شود", async () => {
     const kv = new MockKV();
-    await kv.put(USD_MESSAGE_ID_KEY, "100");
+    await kv.put(USD_MESSAGE_ID_KEY, "100"); // پیام قبلی موجود
     const env = makeEnv({ STATE: kv });
     const { calls, fetchFn } = telegramRecorder();
     const result = await runUsdRefresh(env, {
@@ -117,10 +117,15 @@ describe("runUsdRefresh — جاب ۱ دقیقه (editMessageText روی پیا�
     });
     expect(result.status).toBe("ok");
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toContain("editMessageText");
-    expect(calls[0]?.body.message_id).toBe(100);
+    // پیام جدید با sendMessage — نه ویرایش پیام قبلی
+    expect(calls[0]?.url).toContain("sendMessage");
+    expect(calls[0]?.url).not.toContain("editMessageText");
     expect(calls[0]?.body.chat_id).toBe(CHANNEL_ID);
     expect(calls[0]?.body.parse_mode).toBe("HTML");
+    // هیچ message_id برای ویرایش ارسال نمی‌شود
+    expect(calls[0]?.body.message_id).toBeUndefined();
+    // id آخرین پیام منتشرشده ثبت شد (مشاهده/وریفای — نه ویرایش)
+    expect(kv.store.get(USD_MESSAGE_ID_KEY)).toBe("100");
   });
 
   it("id خراب در KV → مسیر پیام جدید (نه خطا)", async () => {
@@ -229,10 +234,10 @@ describe("runUsdRefresh — ساعت بازار (OPEN / CLOSED / UNKNOWN)", () =
     expect(calls).toHaveLength(0);
   });
 
-  it("CLOSED + کش معتبر → edit همان پیام با متن «بازار بسته» (بدون fetch جدید)", async () => {
+  it("CLOSED + کش معتبر → پیام جدید با متن «بازار بسته» (بدون fetch جدید)", async () => {
     const kv = new MockKV();
     await kv.put(USD_MESSAGE_ID_KEY, "100");
-    // داده کهنه‌تر از ۱۰ دقیقه — در حالت CLOSED مجاز است (نمایش آخرین قیمت معتبر)
+    // دادهٔ کهنه‌تر از ۱۰ دقیقه — در حالت CLOSED مجاز است (نمایش آخرین قیمت معتبر)
     const cached = fakeUsdPrice({ updatedAt: "2025-10-08T09:00:00Z" });
     await kv.put(LAST_USD_PRICE_KEY, JSON.stringify(cached));
     const env = makeEnv({ STATE: kv });
@@ -240,13 +245,14 @@ describe("runUsdRefresh — ساعت بازار (OPEN / CLOSED / UNKNOWN)", () =
     const result = await runUsdRefresh(env, {
       fetchFn,
       now: NOW,
-      provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
       marketHours: alwaysClosedMarketHours(),
+      provider: fakeProvider(fakeUsdPrice({ updatedAt: FRESH })),
     });
     expect(result.status).toBe("market-closed");
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toContain("editMessageText");
-    expect(calls[0]?.body.message_id).toBe(100);
+    // پیام جدید با sendMessage — پیام قبلی ویرایش نمی‌شود
+    expect(calls[0]?.url).toContain("sendMessage");
+    expect(calls[0]?.url).not.toContain("editMessageText");
     expect(String(calls[0]?.body.text)).toContain("بازار بسته است");
     expect(String(calls[0]?.body.text)).toContain("<b>253,000</b> خرید");
     expect(String(calls[0]?.body.text)).toContain("<b>253,800</b> معامله");
@@ -257,6 +263,30 @@ describe("runUsdRefresh — ساعت بازار (OPEN / CLOSED / UNKNOWN)", () =
     ).toBe("2025-10-08T09:00:00Z");
   });
 
+  it("CLOSED اجرای دوم → بدون پیام جدید (فقط گذارِ بسته شدن پیام می‌سازد)", async () => {
+    const kv = new MockKV();
+    const cached = fakeUsdPrice({ updatedAt: "2025-10-08T09:00:00Z" });
+    await kv.put(LAST_USD_PRICE_KEY, JSON.stringify(cached));
+    const env = makeEnv({ STATE: kv });
+    const { calls, fetchFn } = telegramRecorder();
+    // اجرای اولِ بسته: پیام گذار (۱ تماس)
+    const first = await runUsdRefresh(env, {
+      fetchFn,
+      now: NOW,
+      marketHours: alwaysClosedMarketHours(),
+    });
+    expect(first.status).toBe("market-closed");
+    expect(calls).toHaveLength(1);
+    // اجرای بستهٔ بعدی: همان متن → UNCHANGED — بدون تماس تلگرام
+    const second = await runUsdRefresh(env, {
+      fetchFn,
+      now: NOW,
+      marketHours: alwaysClosedMarketHours(),
+    });
+    expect(second.status).toBe("market-closed");
+    expect(second.reason).toBe("UNCHANGED");
+    expect(calls).toHaveLength(1); // هیچ پیام جدید اضافه نشد
+  });
   it("CLOSED + کش خراب (خرید > فروش) → invalid بدون انتشار", async () => {
     const kv = new MockKV();
     const cached = fakeUsdPrice({

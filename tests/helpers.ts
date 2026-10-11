@@ -223,6 +223,11 @@ export interface RecorderOptions {
   memberStatus?: string;
   /** خطای API برای getChatMember (≠ عدم عضویت) */
   memberError?: string;
+  /**
+   * شناسهٔ پیامهای ارسالی افزایشی (100, 101, 102, …) — برای اثبات
+   * «پیام جدید» در مدل ارسال هر اجرا (راند ۲۸). پیشفرض: همیشه 100.
+   */
+  autoIncrementMessageIds?: boolean;
 }
 
 /** fetch فیک تلگرام — همه فراخوانیها را برای assertion ثبت می‌کند */
@@ -231,6 +236,7 @@ export function telegramRecorder(options: RecorderOptions = {}) {
     url: string;
     body: Record<string, unknown>;
   }> = [];
+  let nextMessageId = 100;
   const fetchFn = (async (url: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof init?.body === "string" ? init.body : "";
     calls.push({ url: String(url), body: raw ? JSON.parse(raw) : {} });
@@ -260,7 +266,10 @@ export function telegramRecorder(options: RecorderOptions = {}) {
       });
     }
     const isEdit = String(url).includes("editMessageText");
-    const payload = { ok: true, result: isEdit ? true : { message_id: 100 } };
+    const messageId = options.autoIncrementMessageIds
+      ? nextMessageId++
+      : 100;
+    const payload = { ok: true, result: isEdit ? true : { message_id: messageId } };
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { "content-type": "application/json" },

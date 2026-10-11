@@ -427,33 +427,47 @@ describe("runUsdRefresh — اعتبارسنجی متقاطع در انتشار"
     expect(text).not.toContain("خطا");
   });
 
-  it("دادهٔ بی‌تغییر (UNCHANGED) → هیچ fetch مرجعی انجام نمیشود (صرفهٔ درخواست)", async () => {
+  it("دادهٔ یکسان در اجرای دوم → مرجع‌ها دوباره چک و «پیام جدید» ارسال می‌شود (قیمت یکسان = پیام جدید)", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
     let refFetches = 0;
-    const counting = routedFetch(fetchFn, {
-      tgju: ((): Response => {
+    // مرجع TGJU هر بار Response تازه می‌سازد (بدنهٔ Response فقط یک‌بار
+    // خواندنی است — در مدل پیام جدید هر انتشار مرجع را می‌خواند)
+    const counting = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("api.telegram.org")) return fetchFn(url, init);
+      if (u.includes("tgju")) {
         refFetches += 1;
         return jsonRes(tgjuBody());
-      })(),
-    });
-    // اجرای اول: انتشار (چک فعال — ۱ fetch مرجع)
+      }
+      if (u.includes("wallex")) return jsonRes(wallexBody(264300, 264297));
+      throw new Error(`unexpected url: ${u}`);
+    }) as typeof fetch;
+
+    // اجرای اول: انتشار (۱ fetch مرجع)
     await runUsdRefresh(env, {
       fetchFn: counting,
       provider: fakeProvider(null, USER_REPORT),
       marketHours: alwaysOpenMarketHours(),
+      now: FIXED_NOW,
     });
     const afterFirst = refFetches;
-    // اجرای دوم با همان داده: UNCHANGED → بدون fetch مرجع
+    expect(afterFirst).toBe(1);
+
+    // اجرای دوم با همان داده: چک متقاطع دوباره اجرا و پیام «جدید» ارسال
     const result = await runUsdRefresh(env, {
       fetchFn: counting,
       provider: fakeProvider(null, USER_REPORT),
       marketHours: alwaysOpenMarketHours(),
+      now: FIXED_NOW,
     });
     expect(result.status).toBe("ok");
-    expect(result.reason).toBe("UNCHANGED");
-    expect(refFetches).toBe(afterFirst);
+    expect(refFetches).toBe(2); // چک متقاطع در «هر» انتشار
+    const sends = calls.filter((c) => c.url.endsWith("/sendMessage"));
+    const edits = calls.filter((c) => c.url.endsWith("/editMessageText"));
+    expect(sends).toHaveLength(2); // قیمت یکسان — باز هم پیام جدید
+    expect(edits).toHaveLength(0);
   });
 });
 

@@ -141,7 +141,7 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     expect(String(sent[0]?.body.text)).not.toContain("قیمت تتر: <b>266,200");
   });
 
-  it("اجرای دوم با دادهٔ یکسان → ویرایش نمی‌کند (UNCHANGED — صرفهٔ KV/Telegram)", async () => {
+  it("اجرای دوم با دادهٔ یکسان → پیام جدید دوم (قیمت یکسان هم پیام جدید) — بدون هیچ ویرایش", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -159,13 +159,17 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     });
 
     expect(result.status).toBe("ok");
-    expect(result.reason).toBe("UNCHANGED");
-    // فقط یک فراخوانی sendMessage (پیام اول) — هیچ editMessageText اضافه نشد
+    // دو پیام جدید (هر اجرای معتبر یک پیام) — حتی با قیمت یکسان
+    const sends = calls.filter((c) => c.url.endsWith("/sendMessage"));
+    expect(sends).toHaveLength(2);
+    // پیام قبلی هرگز ویرایش نشد
     const edits = calls.filter((c) => c.url.endsWith("/editMessageText"));
     expect(edits).toHaveLength(0);
+    // متن هر دو پیام یکسان است — پیام دوم هم واقعاً «ارسال» شد
+    expect(String(sends[1]?.body.text)).toBe(String(sends[0]?.body.text));
   });
 
-  it("تغییر نرخ → ویرایش همان پیام (editMessageText با message_id ذخیره‌شده)", async () => {
+  it("تغییر نرخ → پیام جدید با نرخ جدید (پیام قبلی دست‌نخورده)", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -191,15 +195,16 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
 
     expect(result.status).toBe("ok");
     expect(result.reason).toBeUndefined();
+    const sends = calls.filter((c) => c.url.endsWith("/sendMessage"));
     const edits = calls.filter((c) => c.url.endsWith("/editMessageText"));
-    expect(edits).toHaveLength(1);
-    expect(String(edits[0]?.body.message_id)).toBe("100");
-    expect(String(edits[0]?.body.text)).toContain("<b>270,000</b> معامله");
-    expect(String(edits[0]?.body.text)).toContain("<b>270,150 تومان</b>");
-    // ویرایش هم با parse_mode=HTML ارسال می‌شود
-    expect(edits[0]?.body.parse_mode).toBe("HTML");
-    // ویرایش همان پیام است — پیام جدیدی ساخته نشد
-    expect(calls.filter((c) => c.url.endsWith("/sendMessage"))).toHaveLength(1);
+    // پیام دوم «جدید» است — ویرایشی در کار نیست
+    expect(sends).toHaveLength(2);
+    expect(edits).toHaveLength(0);
+    expect(String(sends[1]?.body.text)).toContain("<b>270,000</b> معامله");
+    expect(String(sends[1]?.body.text)).toContain("<b>270,150 تومان</b>");
+    expect(sends[1]?.body.parse_mode).toBe("HTML");
+    // متن پیام اول (قبلی) دست‌نخورده مانده — نرخ قبلی
+    expect(String(sends[0]?.body.text)).toContain("<b>266,200</b> معامله");
     // دادهٔ pinned هم با نرخ جدید نوشته شد
     const pinData = JSON.parse(kv.store.get(PIN_DATA_KEY) ?? "{}");
     expect(pinData.tether).toBe(270_150);
@@ -323,13 +328,15 @@ describe("runUsdRefresh — بازار بسته با دادهٔ تک‌نرخ ک
     expect(result.status).toBe("market-closed");
     // provider در بازار بسته صدا زده نشد
     expect(fetchedCalls.length).toBe(fetchCountBefore);
-    // ویرایش پیام ثابت با نشان بازار بسته + همان نرخ‌های کش‌شده
+    // پیام جدید با نشان بازار بسته + همان نرخ‌های کش‌شده — بدون ویرایش
+    const sends = calls.filter((c) => c.url.endsWith("/sendMessage"));
     const edits = calls.filter((c) => c.url.endsWith("/editMessageText"));
-    expect(edits).toHaveLength(1);
-    expect(String(edits[0]?.body.text)).toContain("بازار بسته");
-    expect(String(edits[0]?.body.text)).toContain("<b>266,200</b> معامله");
-    expect(String(edits[0]?.body.text)).toContain("<b>266,350 تومان</b>");
-    expect(edits[0]?.body.parse_mode).toBe("HTML");
+    expect(edits).toHaveLength(0);
+    expect(sends).toHaveLength(2); // انتشار باز + پیام «گذار به بسته»
+    expect(String(sends[1]?.body.text)).toContain("بازار بسته");
+    expect(String(sends[1]?.body.text)).toContain("<b>266,200</b> معامله");
+    expect(String(sends[1]?.body.text)).toContain("<b>266,350 تومان</b>");
+    expect(sends[1]?.body.parse_mode).toBe("HTML");
   });
 
   it("بدون هیچ کش → no-data (MARKET_CLOSED_NO_CACHE)", async () => {
@@ -371,19 +378,20 @@ describe("runUsdRefresh — صرفه‌جویی نوشتن KV", () => {
     ).length;
     expect(statusWrites1).toBe(1);
 
+    // اجراهای بعدی: پیام جدید می‌سازند اما وضعیت تکراری چیزی نمی‌نویسد
     await runUsdRefresh(env, {
       fetchFn,
       provider,
       marketHours: alwaysOpenMarketHours(),
-    }); // UNCHANGED
+    });
     await runUsdRefresh(env, {
       fetchFn,
       provider,
       marketHours: alwaysOpenMarketHours(),
-    }); // UNCHANGED
+    });
     const statusWrites2 = kv.putCalls.filter(
       (c) => c.key === USD_STATUS_KEY,
     ).length;
-    expect(statusWrites2).toBe(2); // ok → ok/UNCHANGED گذار؛ اجرای سوم چیزی نمی‌نویسد
+    expect(statusWrites2).toBe(1); // ok|<reason> یکسان — بدون نوشتن مجدد
   });
 });

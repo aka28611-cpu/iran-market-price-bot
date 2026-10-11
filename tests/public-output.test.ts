@@ -33,8 +33,8 @@ import {
  *     پیام عمومی قبلی «حفظ» میشود؛ هیچ پیام خطا جایگزین نمیشود.
  *  ۴) تتر بدون مرجع مستقل معتبر (Wallex) منتشر نمیشود؛ مقدار قبلی هم
  *     «نرخ تازه» فرض نمیشود.
- *  ۵) پس از بازیابی منبع، ویرایش همان پیام انجام میشود — پیام تکراری
- *     ساخته نمیشود.
+ *  ۵) پس از بازیابی منبع، پیام «جدید» ارسال می‌شود؛ پیام‌های قبلی هرگز
+ *     ویرایش یا حذف نمی‌شوند (مدل پیام جدید — راند ۲۸).
  */
 
 /** ساخت آیتمهای گزارش با نماد تایپ‌شده (جلوگیری از widening به string) */
@@ -218,7 +218,7 @@ describe("خروجی عمومی در خطای منبع — پیام قبلی ح�
     expect(kv.store.has("status:usd")).toBe(true);
   });
 
-  it("پس از بازیابی: ویرایش همان پیام (بدون پیام تکراری) + اجرای بعدی UNCHANGED", async () => {
+  it("پس از بازیابی: پیام جدید (پیام قبلی دست‌نخورده) + اجرای بعدی با قیمت یکسان نیز پیام جدید", async () => {
     const { calls, fetchFn } = telegramRecorder();
     const kv = new MockKV();
     const env = makeEnv({ STATE: kv });
@@ -247,7 +247,7 @@ describe("خروجی عمومی در خطای منبع — پیام قبلی ح�
       marketHours: alwaysOpenMarketHours(),
     });
 
-    // ۳) بازیابی با نرخ جدید — فقط editMessageText روی همان پیام
+    // ۳) بازیابی با نرخ جدید — پیام جدید (نه ویرایش پیام قبلی)
     const recovered = {
       ...good,
       items: reportItems([
@@ -263,19 +263,20 @@ describe("خروجی عمومی در خطای منبع — پیام قبلی ح�
     expect(result.status).toBe("ok");
     const sends = calls.filter((c) => c.url.endsWith("/sendMessage"));
     const edits = calls.filter((c) => c.url.endsWith("/editMessageText"));
-    expect(sends).toHaveLength(1); // پیام تکراری ساخته نشد
-    expect(edits).toHaveLength(1); // ویرایش همان پیام
-    expect(String(edits[0]?.body.message_id)).toBe("100");
-    const editText = String(edits[0]?.body.text);
-    expectPublicText(editText, "recovery-edit");
-    expect(editText).toContain("<b>255,000</b> معامله");
-    expect(editText).toContain("<b>255,900 تومان</b>");
+    expect(sends).toHaveLength(2); // پیام جدید — نه جایگزینی
+    expect(edits).toHaveLength(0); // پیام قبلی هرگز ویرایش نشد
+    const newText = String(sends[1]?.body.text);
+    expectPublicText(newText, "recovery-new-message");
+    expect(newText).toContain("<b>255,000</b> معامله");
+    expect(newText).toContain("<b>255,900 تومان</b>");
+    // متن پیام اول (قبلی) دست‌نخورده مانده — نرخ قبلی
+    expect(String(sends[0]?.body.text)).toContain("<b>253,000</b> معامله");
     // pin data هم با نرخ تازهٔ «معتبر» بروز شد
     const pinData = JSON.parse(kv.store.get(PIN_DATA_KEY) ?? "{}");
     expect(pinData.value).toBe(255_000);
     expect(pinData.tether).toBe(255_900);
 
-    // ۴) اجرای بعدی با همان داده → UNCHANGED بدون هیچ تماس جدید
+    // ۴) اجرای بعدی با همان داده → باز هم پیام جدید (قیمت یکسان)
     const before = calls.length;
     const again = await runUsdRefresh(env, {
       fetchFn: withRefs(fetchFn),
@@ -283,8 +284,13 @@ describe("خروجی عمومی در خطای منبع — پیام قبلی ح�
       marketHours: alwaysOpenMarketHours(),
     });
     expect(again.status).toBe("ok");
-    expect(again.reason).toBe("UNCHANGED");
-    expect(calls.length).toBe(before);
+    expect(calls.length).toBe(before + 1); // پیام جدید سوم
+    expect(
+      calls.filter((c) => c.url.endsWith("/sendMessage")),
+    ).toHaveLength(3);
+    expect(
+      calls.filter((c) => c.url.endsWith("/editMessageText")),
+    ).toHaveLength(0);
   });
 
   it("تتر بدون مرجع Wallex معتبر → خط تتر در پیام عمومی نیست؛ دلار سالم منتشر", async () => {

@@ -12,16 +12,27 @@ import type { MarketReport, UsdTehranPrice } from "./types";
  * خرابی binding در production از طریق tail قابل تشخیص باشد.
  */
 
+/**
+ * آخرین پیام منتشرشدهٔ جاب ۵ دقیقه (فقط برای مشاهده/وریفای production؛
+ * هرگز برای ویرایش خوانده نمیشود — پیامهای قبلی دست‌نخورده میمانند).
+ */
 export const USD_MESSAGE_ID_KEY = "usd:message_id";
 export const PAUSED_FLAG_KEY = "flag:paused";
 export const LAST_USD_PRICE_KEY = "price:usd:last";
 export const LAST_REPORT_KEY = "price:report:last";
 export const USD_STATUS_KEY = "status:usd";
 export const REPORT_STATUS_KEY = "status:report";
-/** آخرین متن پیام ثابت منتشرشده — برای پرش ویرایش بدونتغییر */
+/** آخرین متن پیام منتشرشده — برای نوشتنِ فقط-در-تغییر و مسیر بازار بسته */
 export const PIN_TEXT_KEY = "pin:usd:text";
 /** آخرین دادهٔ تک‌نرخ دلار (منابع تک‌نرخی) — { value, dataDate? } */
 export const PIN_DATA_KEY = "price:pin:data";
+/**
+ * آخرین رویداد Cron پردازش‌شدهٔ جاب ۵ دقیقه (epoch ms از
+ * event.scheduledTime) — ضد اجرای مجدد «همان رویداد»: تکرار delivery
+ * نباید پیام مضاعف بسازد؛ رویداد بعدی (۵ دقیقه بعد) همیشه پیام جدید
+ * میسازد، حتی با قیمت یکسان.
+ */
+export const USD_LAST_EVENT_KEY = "usd:last_event";
 
 // --- کلیدهای جریان دسترسی/عضویت/تیکت ---
 /** فهرست JSON شناسه کاربران مجاز (آرایه عددی) */
@@ -38,7 +49,7 @@ export const CONVERSATION_PREFIX = "conv:";
 export interface RunStatus {
   /** ISO زمان اجرا */
   at: string;
-  /** ok | paused | no-data | invalid | send-error | edit-error | provider-error */
+  /** ok | paused | no-data | invalid | send-error | provider-error | suppressed | market-* */
   status: string;
   reason?: string;
 }
@@ -117,6 +128,22 @@ export async function setUsdMessageId(
   } catch {
     // ignore
   }
+}
+
+/** آخرین رویداد Cron پردازش‌شده (epoch ms) — null = هیچ/خراب (fail-closed) */
+export async function readUsdLastEvent(
+  kv: KVLike,
+): Promise<number | null> {
+  const value = await readJson<number>(kv, USD_LAST_EVENT_KEY);
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** علامت‌گذاری رویداد به‌عنوان پردازش‌شده (قبل از side effect ارسال) */
+export async function markUsdLastEvent(
+  kv: KVLike,
+  scheduledTime: number,
+): Promise<void> {
+  await writeJson(kv, USD_LAST_EVENT_KEY, scheduledTime);
 }
 
 export async function recordRunStatus(
