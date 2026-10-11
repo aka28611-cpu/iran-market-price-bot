@@ -118,12 +118,14 @@ export async function runMarketReport(
     // آیتمهای نامعتبر حذف میشوند؛ نبود (null) باقی میماند تا فرمتر حذفش کند
     const items = sanitizeReportItems(report.items);
 
-    // اعتبارسنجی متقاطع (بند ۳): یک fetch از TGJU + یکی از Wallex —
-    // آیتم diverged حذف میشود (نرخ مشکوک منتشر نمیشود)؛ مرجع غایب →
-    // بدون حذف + لاگ (advisory — مرجع رایگان نقطهٔ شکست انتشار نیست).
+    // اعتبارسنجی متقاطع (بند ۳ + دستور مالک ۲۰۲۶-۱۰-۱۱): یک fetch از
+    // TGJU + یکی از Wallex — آیتم diverged یا تترِ بدون مرجع Wallex حذف
+    // میشود (fail-closed)؛ قطع مرجع TGJU → بدون حذف + ثبت در لاگ و
+    // status KV (advisory — متن فنی هرگز به پیام عمومی نمیرود).
     const cc = crossCheckConfigFromEnv(env);
     let finalItems = items;
     let ccReason: string | undefined;
+    let ccDropped = false;
     if (cc.enabled && items.length > 0) {
       const outcome = await crossCheckReportItems(
         cc,
@@ -133,7 +135,13 @@ export async function runMarketReport(
       );
       if (outcome.dropped.length > 0) {
         finalItems = outcome.items;
+        ccDropped = true;
         ccReason = `CROSS_CHECK_OMITTED:${outcome.dropped.join(",")}`;
+        logWarn("job.report", { status: "ok", reason: ccReason });
+      } else if (!outcome.tgjuAvailable) {
+        // قطع مرجع مقایسه (advisory): انتشار ادامه دارد؛ فقط لاگ +
+        // reason در status KV — هیچ متن فنی به کانال نمیرود
+        ccReason = "CROSS_CHECK_ADVISORY_TGJU_DOWN";
         logWarn("job.report", { status: "ok", reason: ccReason });
       }
     }
@@ -142,7 +150,7 @@ export async function runMarketReport(
     if (text === null) {
       const result = await record(
         "invalid",
-        ccReason ? "CROSS_CHECK_ALL_DROPPED" : "NO_VALID_ITEMS",
+        ccDropped ? "CROSS_CHECK_ALL_DROPPED" : "NO_VALID_ITEMS",
       );
       logWarn("job.report", { status: result.status, reason: result.reason });
       return result;

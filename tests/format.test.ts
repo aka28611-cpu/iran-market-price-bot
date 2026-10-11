@@ -125,7 +125,7 @@ describe("formatPinnedUsdSingleRate — منبع تکنرخی (نرخ واحد �
   });
 });
 
-// ---------- گزارش ۶ ساعته (متن خام، ارقام فارسی) ----------
+// ---------- گزارش ۶ ساعته (متن خام، ارقام انگلیسی — دستور مالک ۲۰۲۶-۱۰-۱۱) ----------
 
 describe("formatMarketReport — گزارش ۶ ساعته", () => {
   it("آیتمهای موجود را میآورد و نبود را حذف میکند (بدون مقدارسازی)", () => {
@@ -142,12 +142,15 @@ describe("formatMarketReport — گزارش ۶ ساعته", () => {
       ],
     };
     const text = formatMarketReport(report);
-    expect(text).toContain("دلار: ۲۵۳٬۰۰۰");
-    expect(text).toContain("تتر: ۲۵۳٬۹۵۰");
-    expect(text).toContain("طلای ۱۸ عیار: ۴۱٬۵۰۰٬۰۰۰");
-    expect(text).toContain("اونس جهانی: ۲٬۶۵۰٫۴۵");
-    expect(text).toContain("سکه امامی: ۹۲٬۰۰۰٬۰۰۰");
+    // ارقام انگلیسی (دستور مالک): قیمت/تاریخ/ساعت همه 0-9
+    expect(text).toContain("دلار: 253,000");
+    expect(text).toContain("تتر: 253,950");
+    expect(text).toContain("طلای 18 عیار: 41,500,000");
+    expect(text).toContain("اونس جهانی: 2,650.45");
+    expect(text).toContain("سکه امامی: 92,000,000");
     expect(text).not.toContain("یورو:"); // نبود داده = حذف خط
+    expect(text).not.toMatch(/[\u06F0-\u06F9\u0660-\u0669]/); // هیچ رقم فارسی/عربی
+    expect(text).toContain("1404/07/16 - 13:30"); // تاریخ/ساعت شمسی با ارقام انگلیسی
   });
 
   it("بدون هیچ آیتم معتبر → null (عدم انتشار)", () => {

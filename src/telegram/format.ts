@@ -1,4 +1,4 @@
-import { faMoney, faNumber, faTimestamp } from "../datetime";
+import { enTimestamp } from "../datetime";
 import type {
   MarketReport,
   ReportGroup,
@@ -26,6 +26,10 @@ import type {
  * • نام منبع / زمان دریافت داده / جزئیات فنی در پیام عمومی نیست
  * • خطهای خرید/فروش فقط با دادهٔ واقعی میز — از نرخ واحد ساخته نمیشوند
  * • خط تتر فقط با نرخ مستقل تتر — هرگز برابر دلار فرض نمیشود
+ *
+ * قاعدهٔ ارقام (دستور مالک ۲۰۲۶-۱۰-۱۱): «تمام» خروجی عمومی کانال —
+ * پیام ثابت و گزارش ۶ ساعته — فقط با ارقام انگلیسی 0-9 است؛ هیچ رقم
+ * فارسی/عربی مجاز نیست (متن فارسی، نام داراییها و چیدمان حفظ میشود).
  */
 
 // ---------- اعداد انگلیسی (قالب عمومی کانال) ----------
@@ -40,6 +44,15 @@ export function formatEnMoney(value: number): string {
     ",",
   );
   return sign + grouped;
+}
+
+/** عدد عمومی با ارقام انگلیسی، جداکننده «,» و ممیز «.» (مثل اونس دلاری) */
+export function formatEnNumber(value: number, decimals = 0): string {
+  if (!Number.isFinite(value)) return "—";
+  const fixed = value.toFixed(decimals);
+  const [intPart, decPart] = fixed.split(".");
+  const grouped = (intPart ?? "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return decPart ? `${grouped}.${decPart}` : grouped;
 }
 
 // ---------- قالب پیام ثابت دلار (کانال عمومی) ----------
@@ -136,8 +149,8 @@ const REPORT_META: Record<ReportSymbol, ReportMeta> = {
   gbp: { group: "currency", title: "پوند", unit: "toman" },
   try: { group: "currency", title: "لیر", unit: "toman" },
   aed: { group: "currency", title: "درهم", unit: "toman" },
-  gold18k: { group: "gold", title: "طلای ۱۸ عیار", unit: "toman" },
-  gold24k: { group: "gold", title: "طلای ۲۴ عیار", unit: "toman" },
+  gold18k: { group: "gold", title: "طلای 18 عیار", unit: "toman" },
+  gold24k: { group: "gold", title: "طلای 24 عیار", unit: "toman" },
   mesghal: { group: "gold", title: "مثقال", unit: "toman" },
   goldMelted: { group: "gold", title: "آبشده", unit: "toman" },
   ounce: { group: "gold", title: "اونس جهانی", unit: "usd" },
@@ -161,7 +174,9 @@ function formatItem(item: ReportItem): string | null {
   const meta = REPORT_META[item.symbol];
   if (!meta) return null; // نماد ناشناس = حذف
   const value =
-    meta.unit === "usd" ? faNumber(item.value, 2) : faMoney(item.value);
+    meta.unit === "usd"
+      ? formatEnNumber(item.value, 2)
+      : formatEnMoney(item.value);
   return `${meta.title}: ${value}`;
 }
 
@@ -172,11 +187,11 @@ function formatItem(item: ReportItem): string | null {
 export function formatMarketReport(report: MarketReport): string | null {
   const lines: string[] = [
     "📊 گزارش بازار ایران",
-    `🕐 ${faTimestamp(report.fetchedAt)}`,
+    `🕐 ${enTimestamp(report.fetchedAt)}`,
   ];
   // تاریخ دادهٔ منبع (در صورت وجود) — نمایش صادقانهٔ قدم داده
   if (report.dataDate) {
-    lines.push(`📅 دادهٔ منبع: ${faTimestamp(report.dataDate)}`);
+    lines.push(`📅 دادهٔ منبع: ${enTimestamp(report.dataDate)}`);
   }
   let included = 0;
   for (const group of GROUP_ORDER) {

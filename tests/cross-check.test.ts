@@ -281,7 +281,7 @@ describe("crossCheckReportItems — گزارش", () => {
     expect(out.dropped).toContain("usdt");
   });
 
-  it("مرجع غایب → بدون حذف (advisory)", async () => {
+  it("مرجع غایب → تتر حذف (fail-closed)؛ سایر آیتمها بدون حذف (advisory)", async () => {
     const out = await crossCheckReportItems(
       CFG,
       items,
@@ -291,10 +291,14 @@ describe("crossCheckReportItems — گزارش", () => {
       }),
       FIXED_NOW,
     );
-    expect(out.dropped).toEqual([]);
+    // دستور مالک (۲۰۲۶-۱۰-۱۱): تتر بدون مرجع Wallex معتبر منتشر نمیشود
+    expect(out.dropped).toEqual(["usdt"]);
     expect(out.tgjuAvailable).toBe(false);
     expect(out.wallexAvailable).toBe(false);
-    expect(out.items).toHaveLength(items.length);
+    expect(out.items.map((i) => i.symbol)).not.toContain("usdt");
+    // قطع مرجع TGJU: سایر آیتمها حذف نمیشوند (advisory)
+    expect(out.items.map((i) => i.symbol)).toContain("usd");
+    expect(out.items.map((i) => i.symbol)).toContain("emami");
   });
 
   it("config غیرفعال → بدون هیچ fetch", async () => {
@@ -373,11 +377,11 @@ describe("runUsdRefresh — اعتبارسنجی متقاطع در انتشار"
     expect(pinData.tether).toBeUndefined();
   });
 
-  it("مرجع در دسترس نیست → انتشار عادی (advisory — بدون بلاک)", async () => {
+  it("قطع Wallex → خط تتر منتشر نمیشود (fail-closed)؛ دلار با مرجع سالم منتشر میشود", async () => {
     const { calls, fetchFn } = telegramRecorder();
-    const env = makeEnv({ STATE: new MockKV() });
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
     const routed = routedFetch(fetchFn, {
-      tgju: new Response("service unavailable", { status: 503, headers: { "content-type": "text/plain" } }),
       wallex: new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
     });
     const result = await runUsdRefresh(env, {
@@ -386,8 +390,41 @@ describe("runUsdRefresh — اعتبارسنجی متقاطع در انتشار"
       marketHours: alwaysOpenMarketHours(),
     });
     expect(result.status).toBe("ok");
-    expect(result.reason).toBeUndefined();
-    expect(calls.filter((c) => c.url.endsWith("/sendMessage"))).toHaveLength(1);
+    expect(result.reason).toBe("TETHER_OMITTED_NO_REFERENCE");
+    const sent = calls.filter((c) => c.url.endsWith("/sendMessage"));
+    expect(sent).toHaveLength(1);
+    const text = String(sent[0]?.body.text);
+    expect(text).toContain("<b>266,200</b> معامله");
+    expect(text).not.toContain("قیمت تتر"); // تتر بدون مرجع مستقل: حذف خط
+    // مقدار قبلی تتر هم «نرخ تازه» نمایش داده نشد — pin data بدون tether
+    const pinData = JSON.parse(kv.store.get(PIN_DATA_KEY) ?? "{}");
+    expect(pinData.tether).toBeUndefined();
+  });
+
+  it("قطع TGJU → دلار advisory منتشر میشود + تتر با Wallex سالم؛ قطع مرجع فقط در لاگ/KV", async () => {
+    const { calls, fetchFn } = telegramRecorder();
+    const kv = new MockKV();
+    const env = makeEnv({ STATE: kv });
+    const routed = routedFetch(fetchFn, {
+      tgju: new Response("service unavailable", { status: 503, headers: { "content-type": "text/plain" } }),
+      wallex: jsonRes(wallexBody(266_350, 266_350)), // مرجع تتر سالم
+    });
+    const result = await runUsdRefresh(env, {
+      fetchFn: routed,
+      provider: fakeProvider(null, USER_REPORT),
+      marketHours: alwaysOpenMarketHours(),
+    });
+    expect(result.status).toBe("ok");
+    expect(result.reason).toBe("CROSS_CHECK_ADVISORY_TGJU_DOWN");
+    const sent = calls.filter((c) => c.url.endsWith("/sendMessage"));
+    expect(sent).toHaveLength(1);
+    const text = String(sent[0]?.body.text);
+    expect(text).toContain("<b>266,200</b> معامله");
+    expect(text).toContain("<b>266,350 تومان</b>"); // تتر با مرجع معتبر منتشر شد
+    // متن فنی/داخلی هرگز در پیام عمومی نیست
+    expect(text).not.toContain("مرجع");
+    expect(text).not.toContain("تأییدنشده");
+    expect(text).not.toContain("خطا");
   });
 
   it("دادهٔ بی‌تغییر (UNCHANGED) → هیچ fetch مرجعی انجام نمیشود (صرفهٔ درخواست)", async () => {

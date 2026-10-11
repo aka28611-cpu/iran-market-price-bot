@@ -272,17 +272,25 @@ async function refreshSingleRate(
     return result;
   }
 
-  // ---- اعتبارسنجی متقاطع (بند ۳ مأموریت) ----
+  // ---- اعتبارسنجی متقاطع (بند ۳ مأموریت + دستور مالک ۲۰۲۶-۱۰-۱۱) ----
   // فقط برای مقدار «در حال انتشار» اجرا میشود (صرفهٔ درخواست: دادهٔ
   // بی‌تغییر از قبل بالادست چک شده و UNCHANGED است).
   //  • دلار diverged → کل انتشار بلاک + دلیل در status (نرخ مشکوک ممنوع)
   //  • تتر diverged → فقط خط تتر حذف میشود (دادهٔ مشکوک حذف، نه کل پیام)
-  //  • مرجع در دسترس نیست → advisory (انتشار ادامه) + لاگ — مرجعِ رایگان
-  //    نباید نقطهٔ شکست انتشار باشد؛ «ناموجودی مرجع» reason نمیشود.
+  //  • تتر بدون مرجع Wallex معتبر → خط تتر منتشر نمیشود (fail-closed؛
+  //    مقدار قبلی هم «نرخ تازه» فرض نمیشود) — وضعیت فقط در لاگ/KV
+  //  • دلار با مرجع TGJU قطع → advisory: انتشار ادامه (دادهٔ منبع اصلی
+  //    خودش معتبر است) + قطع مرجع در لاگ و reason ثبت میشود (متن فنی
+  //    هرگز به پیام عمومی نمیرود — قالب عمومی فقط قیمت است).
   const fetchFn = deps.fetchFn ?? fetch.bind(globalThis);
   const cc = crossCheckConfigFromEnv(env);
   let publishUsd = usdItem.value;
   let publishTether = tether;
+  // دلیل ثبتشده در status KV (فقط داخلی — هرگز در پیام عمومی):
+  //  • TETHER_OMITTED_NO_REFERENCE — مرجع Wallex قطع/نامعتبر
+  //  • TETHER_OMITTED_CROSS_CHECK — اختلاف غیرعادی تتر
+  //  • CROSS_CHECK_ADVISORY_TGJU_DOWN — مرجع TGJU قطع (انتشار دلار ادامه)
+  let okReason: string | undefined;
   if (cc.enabled) {
     const usdRef = await fetchTgjuQuote(
       TGJU_SYMBOL_MAP.usd ?? "price_dollar_rl",
@@ -309,6 +317,18 @@ async function refreshSingleRate(
       });
       return result;
     }
+    if (usdOutcome.verdict === "reference-unavailable") {
+      // مرجع مقایسه قطع است: انتشار دلار ادامه دارد (منبع اصلی معتبر
+      // است) — قطع مرجع فقط در لاگ و status KV ثبت میشود؛ هیچ متن
+      // فنی به کانال نمیرود (دستور مالک ۲۰۲۶-۱۰-۱۱).
+      okReason = "CROSS_CHECK_ADVISORY_TGJU_DOWN";
+      logWarn("job.usd", {
+        status: "ok",
+        reason: okReason,
+        symbol: "usd",
+        note: "reference unavailable — advisory (publish continues)",
+      });
+    }
     if (publishTether !== null) {
       const tetherRef = await fetchWallexUsdtToman(cc.wallexUrl, fetchFn);
       const tetherOutcome = compareWithReference(
@@ -319,18 +339,39 @@ async function refreshSingleRate(
       if (tetherOutcome.verdict === "diverged") {
         // حذف خط تتر — نرخ مشکوک هرگز منتشر نمیشود (نه جایگزینی)
         publishTether = null;
+        okReason = "TETHER_OMITTED_CROSS_CHECK";
         logWarn("job.usd", {
           status: "ok",
-          reason: "TETHER_OMITTED_CROSS_CHECK",
+          reason: okReason,
           symbol: "usdt",
           diffPct: tetherOutcome.diffPct,
           reference: tetherOutcome.reference,
+        });
+      } else if (tetherOutcome.verdict === "reference-unavailable") {
+        // دستور مالک (۲۰۲۶-۱۰-۱۱): تتر بدون مرجع مستقل معتبر منتشر
+        // نمیشود؛ مقدار قبلی هم «نرخ تازه» نمایش داده نمیشود — خط تتر
+        // حذف و وضعیت فقط در لاگ/KV ثبت میشود (بدون متن فنی عمومی).
+        publishTether = null;
+        okReason = "TETHER_OMITTED_NO_REFERENCE";
+        logWarn("job.usd", {
+          status: "ok",
+          reason: okReason,
+          symbol: "usdt",
+          note: "wallex reference unavailable — tether line withheld",
         });
       }
     }
   }
 
   const finalText = formatPinnedUsdSingleRate(publishUsd, publishTether, false);
+  // نتیجهٔ نهایی = متن پیام فعلی کانال (مثلاً حذف خط تتر در پیامی که
+  // از قبل خط تتر ندارد) → هیچ تماسی با تلگرام لازم نیست (پیام تکراری
+  // یا ویرایش بی‌اثر با خطای «message is not modified» ساخته نمیشود).
+  if (finalText === (await readJson<string>(env.STATE, PIN_TEXT_KEY))) {
+    const result = await record("ok", "UNCHANGED_AFTER_CROSS_CHECK");
+    logInfo("job.usd", { status: result.status, reason: result.reason });
+    return result;
+  }
   const published = await publishPinnedMessage(env, deps, finalText, record);
   if (published) return published;
 
@@ -342,12 +383,7 @@ async function refreshSingleRate(
     ...(publishTether !== null ? { tether: publishTether } : {}),
   };
   await writeJson(env.STATE, PIN_DATA_KEY, pinnedData);
-  const result = await record(
-    "ok",
-    publishTether === null && tether !== null
-      ? "TETHER_OMITTED_CROSS_CHECK"
-      : undefined,
-  );
+  const result = await record("ok", okReason);
   logInfo("job.usd", {
     status: result.status,
     reason: result.reason,

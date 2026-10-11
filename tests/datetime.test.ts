@@ -3,6 +3,7 @@ import {
   faNumber,
   faTehranTime,
   faTimestamp,
+  enTimestamp,
   gregorianToJalali,
   jalaliToGregorian,
 } from "../src/datetime";
@@ -124,5 +125,20 @@ describe("faTehranTime — آفست +03:30", () => {
 
   it("20:45 UTC → ۰۰:۱۵ (گذر از نیمه‌شب)", () => {
     expect(faTehranTime(new Date("2025-10-08T20:45:00Z"))).toBe("۰۰:۱۵");
+  });
+});
+
+// ---------- enTimestamp — خروجی عمومی با ارقام انگلیسی ----------
+
+describe("enTimestamp — تاریخ شمسی + ساعت تهران با ارقام انگلیسی", () => {
+  it("همان ساختار faTimestamp ولی با ارقام 0-9", () => {
+    expect(enTimestamp("2025-10-08T10:00:00Z")).toBe("1404/07/16 - 13:30");
+    expect(enTimestamp("bad")).toBe("—");
+  });
+
+  it("هیچ رقم فارسی/عربی در خروجی نیست", () => {
+    for (const iso of ["2025-10-08T10:00:00Z", "2026-03-20T21:07:00Z", "2024-02-29T23:59:00Z"]) {
+      expect(enTimestamp(iso)).not.toMatch(/[\u06F0-\u06F9\u0660-\u0669]/);
+    }
   });
 });

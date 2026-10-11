@@ -72,9 +72,10 @@ describe("runMarketReport — جاب ۶ ساعت (sendMessage جدید)", () => 
     expect(sent).toHaveLength(1);
     expect(sent[0]?.body.chat_id).toBe(CHANNEL_ID);
     const text = String(sent[0]?.body.text);
-    expect(text).toContain("دلار: ۲۵۳٬۰۰۰");
-    expect(text).toContain("سکه امامی: ۹۲٬۰۰۰٬۰۰۰");
+    expect(text).toContain("دلار: 253,000");
+    expect(text).toContain("سکه امامی: 92,000,000");
     expect(text).not.toContain("یورو:"); // نبود داده
+    expect(text).not.toMatch(/[\u06F0-\u06F9\u0660-\u0669]/);
     expect(text).not.toContain("ربع سکه:"); // مقدار نامعتبر
     const status = JSON.parse(kv.store.get(REPORT_STATUS_KEY) ?? "{}");
     expect(status.status).toBe("ok");

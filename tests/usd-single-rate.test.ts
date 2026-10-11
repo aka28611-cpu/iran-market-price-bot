@@ -34,6 +34,40 @@ const USER_REPORT: MarketReport = {
   dataDate: new Date().toISOString(),
 };
 
+/**
+ * مرجعهای cross-check معتبر و منطبق بر USER_REPORT (دستور مالک ۲۰۲۶-۱۰-۱۱:
+ * تتر فقط با مرجع Wallex معتبر منتشر میشود — تستهای «انتشار تتر» باید مرجع
+ * سالم داشته باشند). تلگرام → همان recorder (برای assertion تماسها).
+ */
+function withRefs(recorderFetch: typeof fetch): typeof fetch {
+  return (async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = String(url);
+    if (u.includes("tgju")) {
+      // مهر تازه (نیمه‌شب تهران امروز) — همیشه داخل پنجرهٔ ۷۲h
+      const today = new Date(Date.now() - 210 * 60_000).toISOString().slice(0, 10);
+      return new Response(
+        JSON.stringify({
+          current: { price_dollar_rl: { p: "2,651,000", ts: `${today} 00:00:00` } },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (u.includes("wallex")) {
+      // میانگین 264,299 — اختلاف ~0.8٪ با تتر USER_REPORT (داخل آستانهٔ ۳٪)
+      return new Response(
+        JSON.stringify({
+          result: {
+            ask: [{ price: 264_300, quantity: 1 }],
+            bid: [{ price: 264_297, quantity: 1 }],
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return recorderFetch(url, init);
+  }) as typeof fetch;
+}
+
 describe("runUsdRefresh — مسیر تک‌نرخی", () => {
   beforeEach(() => {
     resetRateLimiterForTests();
@@ -46,7 +80,7 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     const provider = fakeProvider(null, USER_REPORT);
 
     const result = await runUsdRefresh(env, {
-      fetchFn,
+      fetchFn: withRefs(fetchFn),
       provider,
       marketHours: alwaysOpenMarketHours(),
     });
@@ -114,12 +148,12 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     const provider = fakeProvider(null, USER_REPORT);
 
     await runUsdRefresh(env, {
-      fetchFn,
+      fetchFn: withRefs(fetchFn),
       provider,
       marketHours: alwaysOpenMarketHours(),
     });
     const result = await runUsdRefresh(env, {
-      fetchFn,
+      fetchFn: withRefs(fetchFn),
       provider,
       marketHours: alwaysOpenMarketHours(),
     });
@@ -137,7 +171,7 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
     const env = makeEnv({ STATE: kv });
 
     await runUsdRefresh(env, {
-      fetchFn,
+      fetchFn: withRefs(fetchFn),
       provider: fakeProvider(null, USER_REPORT),
       marketHours: alwaysOpenMarketHours(),
     });
@@ -150,7 +184,7 @@ describe("runUsdRefresh — مسیر تک‌نرخی", () => {
       ],
     };
     const result = await runUsdRefresh(env, {
-      fetchFn,
+      fetchFn: withRefs(fetchFn),
       provider: fakeProvider(null, changed),
       marketHours: alwaysOpenMarketHours(),
     });
@@ -254,9 +288,10 @@ describe("runUsdRefresh — بازار بسته با دادهٔ تک‌نرخ ک
       },
     };
 
-    // ابتدا در بازار باز دادهٔ pinned بسازیم
+    // ابتدا در بازار باز دادهٔ pinned بسازیم (با مرجعهای معتبر تا
+    // تترِ مستقل هم منتشر و کش شود)
     await runUsdRefresh(env, {
-      fetchFn,
+      fetchFn: withRefs(fetchFn),
       provider: countingProvider,
       marketHours: {
         timezone: "Asia/Tehran",

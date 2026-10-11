@@ -194,3 +194,23 @@ export function faTehranTime(date: Date): string {
   const p = tehranParts(date);
   return faDigits(`${pad2(p.hour)}:${pad2(p.minute)}`);
 }
+
+// ---------- نمایش با ارقام انگلیسی (خروجی عمومی کانال) ----------
+
+/**
+ * «1404/07/16 - 13:30» به وقت تهران با ارقام انگلیسی؛ داده نامعتبر → «—».
+ * دستور مالک (۲۰۲۶-۱۰-۱۱): هیچ رقم فارسی/عربی در خروجی عمومی مجاز نیست —
+ * تاریخ و ساعت گزارش عمومی هم باید با ارقام 0-9 باشد.
+ * ساختار رشته («YYYY/MM/DD - HH:MM») عمداً همان faTimestamp است.
+ */
+export function enTimestamp(iso: string): string {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return "—";
+  const parts = tehranParts(new Date(ts));
+  const { jy, jm, jd } = gregorianToJalali(
+    parts.year,
+    parts.month,
+    parts.day,
+  );
+  return `${jy}/${pad2(jm)}/${pad2(jd)} - ${pad2(parts.hour)}:${pad2(parts.minute)}`;
+}

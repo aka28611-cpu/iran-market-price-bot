@@ -19,8 +19,11 @@ import type { ReportItem, ReportSymbol } from "../types";
  * قیمت Wallex از قبل به تومان است (TMN).
  *
  * رفتار fail-safe:
- *  • مرجع در دسترس نبود/parse نشد → «reference-unavailable» → انتشار ادامه
- *    می‌یابد (چک advisory) + لاگ؛ مرجعِ رایگان نباید نقطهٔ شکست انتشار باشد.
+ *  • «تتر» fail-closed است (دستور مالک ۲۰۲۶-۱۰-۱۱): مرجع Wallex قطع/نامعتبر
+ *    → آیتم/خط تتر منتشر نمیشود (مقدار قبلی هم نرخ تازه فرض نمیشود)؛
+ *    وضعیت فقط در لاگ و KV — بدون متن فنی عمومی.
+ *  • سایر نمادها advisory: مرجع TGJU قطع → انتشار ادامه + لاگ (مرجعِ رایگان
+ *    نباید نقطهٔ شکست انتشار باشد) — قطع مرجع در status KV ثبت میشود.
  *  • اختلاف بیش از آستانه → «diverged» → تصمیم انتشار با جاب (حذف داده یا
  *    کل انتشار) — هرگز «نادیده گرفتن» اختلاف.
  *  • هیچ مقداری از مرجع جایگزین منبع اصلی نمی‌شود (اصل fail-closed پروژه).
@@ -367,7 +370,17 @@ export async function crossCheckReportItems(
   for (const item of items) {
     // تتر → مرجع Wallex (مستقل)؛ بقیه → TGJU
     if (item.symbol === "usdt") {
-      if (typeof item.value === "number" && wallex) {
+      if (typeof item.value === "number") {
+        if (!wallex) {
+          // دستور مالک (۲۰۲۶-۱۰-۱۱): تتر بدون مرجع مستقل معتبر منتشر
+          // نمیشود — حذف آیتم (نه جایگزینی)؛ فقط لاگ/KV، بدون متن عمومی
+          result.dropped.push(item.symbol);
+          logWarn("crosscheck.report.item-no-reference", {
+            symbol: item.symbol,
+            note: "wallex unavailable — tether withheld",
+          });
+          continue;
+        }
         const outcome = compareWithReference(
           item.value,
           wallex,
