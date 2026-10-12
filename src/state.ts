@@ -34,6 +34,17 @@ export const PIN_DATA_KEY = "price:pin:data";
  */
 export const USD_LAST_EVENT_KEY = "usd:last_event";
 
+// --- سلامت منابع مرجع (مأموریت ۲۹) ---
+/**
+ * snapshot سلامت منابع تتر/مراجع (JSON) — نوشتن «تجمعی با حداقل فاصلهٔ
+ * ۳۰ دقیقه» (حفظ سقف نوشتن KV: حداکثر ~۴۸+۴ نوشتن/روز) + همیشه در جاب
+ * گزارش ۶ ساعته. merge با snapshot قبلی → آخرین موفقیت/خطای هر منبع
+ * بین نوشتنها هم حفظ میشود.
+ */
+export const REF_HEALTH_KEY = "health:refs";
+/** حداقل فاصلهٔ دو نوشتن سلامت (ms) */
+export const REF_HEALTH_MIN_WRITE_INTERVAL_MS = 30 * 60 * 1000;
+
 // --- کلیدهای جریان دسترسی/عضویت/تیکت ---
 /** فهرست JSON شناسه کاربران مجاز (آرایه عددی) */
 export const ALLOW_LIST_KEY = "allow:list";
@@ -285,4 +296,106 @@ export async function writeAllowedUsers(
   // مقادیر تکراری حذف میشود — یک کاربر فقط یکبار در فهرست است
   const unique = Array.from(new Set(users));
   await writeJson(kv, ALLOW_LIST_KEY, unique);
+}
+
+// --- سلامت منابع مرجع (مأموریت ۲۹ — آمار per-source در KV) ---
+
+/** وضعیت یک منبع مرجع در یک snapshot */
+export interface RefSourceHealthEntry {
+  /** ok | error */
+  status: "ok" | "error";
+  /** آخرین مقدار معتبر (تومان) — فقط هنگام ok */
+  valueToman?: number;
+  /** تأخیر آخرین fetch موفق (ms) */
+  latencyMs?: number;
+  /** آخرین خطا (کد داخلی) */
+  lastError?: string;
+  /** ISO آخرین موفقیت — بین snapshotها merge میشود */
+  lastSuccessAt?: string;
+  /** ISO آخرین خطا — بین snapshotها merge میشود */
+  lastErrorAt?: string;
+}
+
+/** snapshot سلامت منابع مرجع */
+export interface RefHealthSnapshot {
+  /** ISO نوشتن snapshot */
+  at: string;
+  /** منابع تتر (wallex/ramzinex/nobitex) */
+  tether: Record<string, RefSourceHealthEntry>;
+}
+
+/**
+ * ساخت snapshot سلامت از نتایج زمان-اجرا (TetherSourceOutcome) — merge با
+ * snapshot قبلی KV تا lastSuccessAt/lastErrorAt بین نوشتنها حفظ شود.
+ */
+export function buildRefHealthSnapshot(
+  previous: RefHealthSnapshot | null,
+  outcomes: ReadonlyArray<{
+    source: string;
+    quote: { valueToman: number } | null;
+    latencyMs: number;
+    error: string | null;
+  }>,
+  now: Date,
+): RefHealthSnapshot {
+  const tether: Record<string, RefSourceHealthEntry> = {};
+  for (const o of outcomes) {
+    const prev = previous?.tether?.[o.source];
+    const ok = o.quote !== null;
+    tether[o.source] = ok
+      ? {
+          status: "ok",
+          valueToman: o.quote!.valueToman,
+          latencyMs: o.latencyMs,
+          lastSuccessAt: now.toISOString(),
+          ...(prev?.lastErrorAt && !prev.lastSuccessAt
+            ? { lastError: prev.lastError, lastErrorAt: prev.lastErrorAt }
+            : {}),
+        }
+      : {
+          status: "error",
+          lastError: o.error ?? "UNKNOWN",
+          lastErrorAt: now.toISOString(),
+          ...(prev?.lastSuccessAt
+            ? { lastSuccessAt: prev.lastSuccessAt, valueToman: prev.valueToman, latencyMs: prev.latencyMs }
+            : {}),
+        };
+  }
+  return { at: now.toISOString(), tether };
+}
+
+/**
+ * نوشتن سلامت با «سرکوب زمانی»: حداکثر یک نوشتن در هر ۳۰ دقیقه
+ * (force=true برای جاب گزارش ۶ ساعته). خروجی: نوشته شد؟
+ */
+export async function writeRefHealthIfDue(
+  kv: KVLike,
+  outcomes: ReadonlyArray<{
+    source: string;
+    quote: { valueToman: number } | null;
+    latencyMs: number;
+    error: string | null;
+  }>,
+  now: Date,
+  force = false,
+): Promise<boolean> {
+  try {
+    const previous = await readJson<RefHealthSnapshot>(kv, REF_HEALTH_KEY);
+    if (!force && previous?.at) {
+      const lastAt = Date.parse(previous.at);
+      if (
+        Number.isFinite(lastAt) &&
+        now.getTime() - lastAt < REF_HEALTH_MIN_WRITE_INTERVAL_MS
+      ) {
+        return false; // هنوز تازه است — بدون نوشتن (سقف KV)
+      }
+    }
+    const snapshot = buildRefHealthSnapshot(previous, outcomes, now);
+    return await writeJson(kv, REF_HEALTH_KEY, snapshot);
+  } catch (err) {
+    logWarn("kv.ref-health.write-error", {
+      error: err instanceof Error ? err.name : "UNKNOWN",
+    });
+    return false;
+  }
 }

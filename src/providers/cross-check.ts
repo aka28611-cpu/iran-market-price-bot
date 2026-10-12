@@ -1,6 +1,13 @@
 import { TEHRAN_OFFSET_MINUTES } from "../datetime";
 import { logInfo, logWarn } from "../logging";
 import type { ReportItem, ReportSymbol } from "../types";
+import {
+  collectTetherReferences,
+  evaluateTetherReferences,
+  type TetherRefConfig,
+  type TetherSourceId,
+  type TetherSourceOutcome,
+} from "./tether-references";
 
 /**
  * اعتبارسنجی متقاطع (Cross-Check) — مقایسهٔ دادهٔ منبع اصلی با مرجع مستقل
@@ -47,10 +54,28 @@ export interface CrossCheckConfig {
   fxTolerancePct: number;
   /** آستانهٔ اختلاف طلا و سکه (٪) — نوسان بالاتر این گروه */
   goldTolerancePct: number;
-  /** آستانهٔ اختلاف تتر (٪) — مرجع صرافیِ مستقل، اسپرد واقعی دارد */
+  /** آستانهٔ اختلاف تتر (٪) — مرجع صرافیهای مستقل، اسپرد واقعی دارد */
   tetherTolerancePct: number;
   tgjuUrl: string;
   wallexUrl: string;
+  /** منابع مرجع تتر (مأموریت ۲۹ — چندمنبعی) */
+  tetherSources: readonly TetherSourceId[];
+  ramzinexUrl: string;
+  nobitexUrl: string;
+}
+
+/** پیکربندی منابع تتر برای موتور مرجع (tether-references.ts) */
+export function tetherRefConfigFrom(
+  cfg: CrossCheckConfig,
+): TetherRefConfig {
+  return {
+    enabled: cfg.enabled,
+    tetherSources: cfg.tetherSources,
+    wallexUrl: cfg.wallexUrl,
+    ramzinexUrl: cfg.ramzinexUrl,
+    nobitexUrl: cfg.nobitexUrl,
+    tetherTolerancePct: cfg.tetherTolerancePct,
+  };
 }
 
 /** ساخت پیکربندی از env (parseشده در src/env.ts — مقادیر از قبل معتبرند) */
@@ -61,6 +86,9 @@ export function crossCheckConfigFromEnv(env: {
   CROSS_CHECK_TETHER_TOLERANCE_PCT: number;
   TGJU_REFERENCE_URL: string;
   WALLEX_MARKETS_URL: string;
+  TETHER_REFERENCE_SOURCES: string;
+  RAMZINEX_PAIR_URL: string;
+  NOBITEX_STATS_URL: string;
 }): CrossCheckConfig {
   return {
     enabled: env.CROSS_CHECK_ENABLED,
@@ -69,6 +97,11 @@ export function crossCheckConfigFromEnv(env: {
     tetherTolerancePct: env.CROSS_CHECK_TETHER_TOLERANCE_PCT,
     tgjuUrl: env.TGJU_REFERENCE_URL,
     wallexUrl: env.WALLEX_MARKETS_URL,
+    tetherSources: env.TETHER_REFERENCE_SOURCES.split(",")
+      .map((x) => x.trim())
+      .filter((x): x is TetherSourceId => x !== ""),
+    ramzinexUrl: env.RAMZINEX_PAIR_URL,
+    nobitexUrl: env.NOBITEX_STATS_URL,
   };
 }
 
@@ -334,15 +367,23 @@ export interface ReportCrossCheckResult {
   dropped: ReportSymbol[];
   /** TGJU در دسترس بود؟ (false = چک انجام نشد — advisory) */
   tgjuAvailable: boolean;
-  /** Wallex در دسترس بود؟ */
+  /**
+   * Wallex در دسترس بود؟ (برای سازگاری با تستها — فقط وضعیت همین منبع.
+   * مأموریت ۲۹: تتر با «همهٔ» منابع مستقل اعتبارسنجی میشود؛ رامزینکس/
+   * نوبیتکس سالم + والکس قطع = تتر همچنان قابل انتشار است.)
+   */
   wallexAvailable: boolean;
+  /** جزئیات منابع تتر (مأموریت ۲۹ — سلامت/لاگ/KV) */
+  tetherOutcomes: readonly TetherSourceOutcome[];
 }
 
 /**
  * اعتبارسنجی متقاطع آیتمهای گزارش:
- *  • یک fetch از TGJU + یک fetch از Wallex (تتر)
+ *  • یک fetch از TGJU + منابع تتر بهصورت «موازی» (Wallex/Ramzinex/Nobitex)
  *  • آیتم بدون نگاشت TGJU (مثل ounce دلاری) → بدون چک، باقی میماند
- *  • diverged → آیتم «حذف» میشود (نه جایگزینی، نه انتشار نرخ مشکوک)
+ *  • تتر → موتور چندمنبعی (میانهٔ مقاوم + اجماع + آستانه) — diverged یا
+ *    بدون مرجع معتبر → آیتم حذف (نه جایگزینی، نه انتشار نرخ مشکوک)
+ *  • سایر نمادها → چک آینهٔ TGJU (خانوادهٔ tgju — آشکارساز خرابی منبع)
  *  • مرجع غایب → آیتمها دست نخورده میمانند + لاگ (advisory)
  */
 export async function crossCheckReportItems(
@@ -356,44 +397,42 @@ export async function crossCheckReportItems(
     dropped: [],
     tgjuAvailable: false,
     wallexAvailable: false,
+    tetherOutcomes: [],
   };
   if (!cfg.enabled) return result;
 
-  const [tgju, wallex] = await Promise.all([
+  const [tgju, tetherOutcomes] = await Promise.all([
     fetchTgjuSnapshot(cfg.tgjuUrl, fetchFn, now),
-    fetchWallexUsdtToman(cfg.wallexUrl, fetchFn),
+    collectTetherReferences(tetherRefConfigFrom(cfg), fetchFn, now),
   ]);
   result.tgjuAvailable = tgju !== null;
-  result.wallexAvailable = wallex !== null;
+  result.tetherOutcomes = tetherOutcomes;
+  result.wallexAvailable =
+    tetherOutcomes.find((o) => o.source === "wallex")?.quote !== null &&
+    tetherOutcomes.some((o) => o.source === "wallex");
 
   const kept: ReportItem[] = [];
   for (const item of items) {
-    // تتر → مرجع Wallex (مستقل)؛ بقیه → TGJU
+    // تتر → موتور چندمنبعی (مستقل)؛ بقیه → آینهٔ TGJU
     if (item.symbol === "usdt") {
       if (typeof item.value === "number") {
-        if (!wallex) {
-          // دستور مالک (۲۰۲۶-۱۰-۱۱): تتر بدون مرجع مستقل معتبر منتشر
-          // نمیشود — حذف آیتم (نه جایگزینی)؛ فقط لاگ/KV، بدون متن عمومی
+        const verdict = evaluateTetherReferences(
+          item.value,
+          tetherOutcomes,
+          cfg.tetherTolerancePct,
+        );
+        if (!verdict.publish) {
+          // دستور مالک (۲۰۲۶-۱۰-۱۱ + مأموریت ۲۹): تتر بدون مرجع مستقلِ
+          // معتبر/اجماع منتشر نمیشود — حذف آیتم؛ فقط لاگ/KV
           result.dropped.push(item.symbol);
           logWarn("crosscheck.report.item-no-reference", {
             symbol: item.symbol,
-            note: "wallex unavailable — tether withheld",
+            reason: verdict.reason,
+            reference: verdict.reference,
+            validSources: verdict.validSources,
+            origins: verdict.originCount,
           });
           continue;
-        }
-        const outcome = compareWithReference(
-          item.value,
-          wallex,
-          cfg.tetherTolerancePct,
-        );
-        if (outcome.verdict === "diverged") {
-          result.dropped.push(item.symbol);
-          logWarn("crosscheck.report.item-diverged", {
-            symbol: item.symbol,
-            reference: outcome.reference,
-            diffPct: outcome.diffPct,
-          });
-          continue; // حذف آیتم از گزارش
         }
       }
       kept.push(item);

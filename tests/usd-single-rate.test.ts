@@ -42,6 +42,13 @@ const USER_REPORT: MarketReport = {
 function withRefs(recorderFetch: typeof fetch): typeof fetch {
   return (async (url: RequestInfo | URL, init?: RequestInit) => {
     const u = String(url);
+    // منابع تتر جدید (مأموریت ۲۹) در این سناریو «قطع» — تنها مرجع سالم Wallex.
+    if (u.includes("ramzinex") || u.includes("nobitex")) {
+      return new Response("upstream unavailable", {
+        status: 503,
+        headers: { "content-type": "text/plain" },
+      });
+    }
     if (u.includes("tgju")) {
       // مهر تازه (نیمه‌شب تهران امروز) — همیشه داخل پنجرهٔ ۷۲h
       const today = new Date(Date.now() - 210 * 60_000).toISOString().slice(0, 10);

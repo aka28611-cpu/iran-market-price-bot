@@ -101,6 +101,14 @@ const REPORT: MarketReport = {
 function withRefs(recorderFetch: typeof fetch, wallexOk = true): typeof fetch {
   return (async (url: RequestInfo | URL, init?: RequestInit) => {
     const u = String(url);
+    // منابع تتر جدید (مأموریت ۲۹) در این سناریو «قطع» — همان معنای قبلی
+    // تست: تنها مرجع سالم Wallex است (در مسیر recorder حساب نمیشوند).
+    if (u.includes("ramzinex") || u.includes("nobitex")) {
+      return new Response("upstream unavailable", {
+        status: 503,
+        headers: { "content-type": "text/plain" },
+      });
+    }
     if (u.includes("tgju")) {
       const today = new Date(Date.now() - 210 * 60_000)
         .toISOString()

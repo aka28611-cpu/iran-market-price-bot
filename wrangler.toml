@@ -30,6 +30,15 @@ CROSS_CHECK_FX_TOLERANCE_PCT = "2.5"
 CROSS_CHECK_GOLD_TOLERANCE_PCT = "5"
 CROSS_CHECK_TETHER_TOLERANCE_PCT = "3"
 
+# --- منابع مرجع تتر (مأموریت ۲۹ — چندمنبعی، همهٔ non-secret) ---
+# مبدأهای مستقل صرافی؛ هر منبع مستقل fail میشود (خرابی یکی بقیه را نمیاندازد).
+# Wallex از egress Workers «ناپایدار ۴۰۳» است (~۱۸٪ موفق) — Ramzinex/Nobitex
+# مرجعهای اضافهاند؛ تتر فقط با «حداقل یک» مرجع معتبر + اجماع منتشر میشود.
+# آیتمها فقط از فهرست مجاز: wallex,ramzinex,nobitex (حذف منبع = ویرایش همین سطر).
+TETHER_REFERENCE_SOURCES = "wallex,ramzinex,nobitex"
+RAMZINEX_PAIR_URL = "https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs/11"
+NOBITEX_STATS_URL = "https://api.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls"
+
 # Cron Triggers:
 #   "*/5 * * * *"  → هر ۵ دقیقه: دلار+تتر (فقط در ساعت باز بازار fetch میکند؛
 #                    CLOSED → کش + نشان بسته؛ داده بی‌تغییر = بدون تماس تلگرام)

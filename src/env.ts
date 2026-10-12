@@ -2,6 +2,13 @@ import {
   TGJU_DEFAULT_URL,
   WALLEX_DEPTH_DEFAULT_URL,
 } from "./providers/cross-check";
+import {
+  DEFAULT_TETHER_SOURCES,
+  KNOWN_TETHER_SOURCES,
+  NOBITEX_STATS_URL_DEFAULT,
+  RAMZINEX_PAIR_URL_DEFAULT,
+  type TetherSourceId,
+} from "./providers/tether-references";
 
 /**
  * اعتبارسنجی fail-closed متغیرهای محیطی.
@@ -57,6 +64,16 @@ export interface Env {
   TGJU_REFERENCE_URL: string;
   /** مرجع تتر Wallex (پیش‌فرض: depth USDTTMN) */
   WALLEX_MARKETS_URL: string;
+  /**
+   * فهرست منابع مرجع تتر (مستقل) — مأموریت ۲۹.
+   * پیش‌فرض: wallex,ramzinex,nobitex (مبدأهای مستقل صرافی).
+   * آیتم ناشناخته = EnvError (غلط تایپی پیکربندی باید بلند بشکند).
+   */
+  TETHER_REFERENCE_SOURCES: string;
+  /** مرجع تتر Ramzinex — جفت USDT/IRT (ریال؛ سبک ~۱KB) */
+  RAMZINEX_PAIR_URL: string;
+  /** مرجع تتر Nobitex — آمار USDT/RLS (ریال؛ ~۲KB) */
+  NOBITEX_STATS_URL: string;
   // --- Bindings ---
   STATE: KVLike;
 }
@@ -181,6 +198,36 @@ export function parseEnv(raw: unknown): Env {
     WALLEX_DEPTH_DEFAULT_URL,
   );
 
+  // --- منابع مرجع تتر (مأموریت ۲۹) — فهرست + URLهای هر منبع ---
+  const tetherSourcesRaw = str("TETHER_REFERENCE_SOURCES");
+  let TETHER_REFERENCE_SOURCES = DEFAULT_TETHER_SOURCES;
+  if (tetherSourcesRaw) {
+    const ids = [
+      ...new Set(
+        tetherSourcesRaw
+          .split(",")
+          .map((x) => x.trim().toLowerCase())
+          .filter((x) => x !== ""),
+      ),
+    ];
+    const unknown = ids.filter(
+      (x) => !KNOWN_TETHER_SOURCES.includes(x as TetherSourceId),
+    );
+    if (unknown.length > 0 || ids.length === 0) {
+      invalid.push("TETHER_REFERENCE_SOURCES");
+    } else {
+      TETHER_REFERENCE_SOURCES = ids.join(",");
+    }
+  }
+  const RAMZINEX_PAIR_URL = parseHttpsUrl(
+    "RAMZINEX_PAIR_URL",
+    RAMZINEX_PAIR_URL_DEFAULT,
+  );
+  const NOBITEX_STATS_URL = parseHttpsUrl(
+    "NOBITEX_STATS_URL",
+    NOBITEX_STATS_URL_DEFAULT,
+  );
+
   const STATE = record["STATE"] as KVLike | undefined;
   if (
     !STATE ||
@@ -211,6 +258,9 @@ export function parseEnv(raw: unknown): Env {
     CROSS_CHECK_TETHER_TOLERANCE_PCT,
     TGJU_REFERENCE_URL,
     WALLEX_MARKETS_URL,
+    TETHER_REFERENCE_SOURCES,
+    RAMZINEX_PAIR_URL,
+    NOBITEX_STATS_URL,
     STATE: STATE as KVLike,
   };
 }

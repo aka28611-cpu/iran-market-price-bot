@@ -86,6 +86,9 @@ export function makeRawEnv(
     CROSS_CHECK_TETHER_TOLERANCE_PCT: "",
     TGJU_REFERENCE_URL: "",
     WALLEX_MARKETS_URL: "",
+    TETHER_REFERENCE_SOURCES: "",
+    RAMZINEX_PAIR_URL: "",
+    NOBITEX_STATS_URL: "",
     STATE: new MockKV(),
     ...overrides,
   };
@@ -110,6 +113,11 @@ export function makeEnv(overrides: Partial<Env> = {}): Env {
     TGJU_REFERENCE_URL: "https://call1.tgju.org/ajax.json",
     WALLEX_MARKETS_URL:
       "https://api.wallex.ir/v1/depth?symbol=USDTTMN",
+    TETHER_REFERENCE_SOURCES: "wallex,ramzinex,nobitex",
+    RAMZINEX_PAIR_URL:
+      "https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs/11",
+    NOBITEX_STATS_URL:
+      "https://api.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls",
     STATE: new MockKV(),
     ...overrides,
   };
@@ -124,6 +132,9 @@ export function makeEnv(overrides: Partial<Env> = {}): Env {
       CROSS_CHECK_TETHER_TOLERANCE_PCT: String(env.CROSS_CHECK_TETHER_TOLERANCE_PCT),
       TGJU_REFERENCE_URL: env.TGJU_REFERENCE_URL,
       WALLEX_MARKETS_URL: env.WALLEX_MARKETS_URL,
+      TETHER_REFERENCE_SOURCES: env.TETHER_REFERENCE_SOURCES,
+      RAMZINEX_PAIR_URL: env.RAMZINEX_PAIR_URL,
+      NOBITEX_STATS_URL: env.NOBITEX_STATS_URL,
     }),
   );
 }

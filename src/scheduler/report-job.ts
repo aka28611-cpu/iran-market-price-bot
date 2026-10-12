@@ -19,6 +19,7 @@ import {
   recordRunStatus,
   REPORT_STATUS_KEY,
   writeJson,
+  writeRefHealthIfDue,
   type RunStatus,
 } from "../state";
 import { sanitizeReportItems } from "../validation";
@@ -132,6 +133,19 @@ export async function runMarketReport(
         items,
         deps.fetchFn ?? fetch.bind(globalThis),
         now,
+      );
+      // سلامت منابع مرجع (مأموریت ۲۹): جاب ۶ ساعته همیشه snapshot کامل
+      // مینویسد (۴ نوشتن/روز — خارج از قیف سقف KV جاب ۵ دقیقهای).
+      await writeRefHealthIfDue(
+        env.STATE,
+        outcome.tetherOutcomes.map((o) => ({
+          source: o.source,
+          quote: o.quote === null ? null : { valueToman: o.quote.valueToman },
+          latencyMs: o.latencyMs,
+          error: o.error,
+        })),
+        now(),
+        true,
       );
       if (outcome.dropped.length > 0) {
         finalItems = outcome.items;

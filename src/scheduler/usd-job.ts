@@ -7,12 +7,15 @@ import {
   type MarketHoursConfig,
 } from "../market-hours";
 import {
-  compareWithReference,
   crossCheckConfigFromEnv,
   fetchTgjuQuote,
-  fetchWallexUsdtToman,
+  tetherRefConfigFrom,
   TGJU_SYMBOL_MAP,
 } from "../providers/cross-check";
+import {
+  collectTetherReferences,
+  evaluateTetherReferences,
+} from "../providers/tether-references";
 import type { PriceProvider } from "../providers/provider";
 import { getProvider } from "../providers/registry";
 import { TelegramClient } from "../telegram/client";
@@ -30,13 +33,14 @@ import {
   readUsdLastEvent,
   recordRunStatusIfChanged,
   readJson,
+  readPinnedUsdSingleRate,
   releaseUsdSendLock,
   setUsdMessageId,
   USD_STATUS_KEY,
   writeJson,
+  writeRefHealthIfDue,
   PIN_TEXT_KEY,
   PIN_DATA_KEY,
-  readPinnedUsdSingleRate,
   type PinnedUsdSingleRate,
 } from "../state";
 import {
@@ -276,96 +280,127 @@ async function refreshSingleRate(
   // این خواندن فقط برای «نوشتن در تغییر» (سقف KV) است — گیتِ ارسال نیست.
   const lastPinText = await readJson<string>(env.STATE, PIN_TEXT_KEY);
 
-  // ---- اعتبارسنجی متقاطع (بند ۳ مأموریت + دستور مالک ۲۰۲۶-۱۰-۱۱) ----
-  // در هر انتشار اجرا می‌شود (هر اجرای معتبر = پیام جدید؛ قیمت یکسان هم
+  // ---- اعتبارسنجی متقاطع (مأموریت ۲۹ — چندمنبعی) ----
+  // در هر انتشار اجرا میشود (هر اجرای معتبر = پیام جدید؛ قیمت یکسان هم
   // باید قبل از انتشار مجدد اعتبارسنجی شود).
-  //  • دلار diverged → کل انتشار بلاک + دلیل در status (نرخ مشکوک ممنوع)
-  //  • تتر diverged → فقط خط تتر حذف میشود (دادهٔ مشکوک حذف، نه کل پیام)
-  //  • تتر بدون مرجع Wallex معتبر → خط تتر منتشر نمیشود (fail-closed؛
-  //    مقدار قبلی هم «نرخ تازه» فرض نمیشود) — وضعیت فقط در لاگ/KV
-  //  • دلار با مرجع TGJU قطع → advisory: انتشار ادامه (دادهٔ منبع اصلی
-  //    خودش معتبر است) + قطع مرجع در لاگ و reason ثبت میشود (متن فنی
-  //    هرگز به پیام عمومی نمیرود — قالب عمومی فقط قیمت است).
+  //  • دلار: آینهٔ TGJU (همان خانوادهٔ tgju — «آشکارساز خرابی»، نه داور
+  //    مستقل) → diverged = بلاک انتشار؛ قطع آینه = advisory.
+  //    استقلال صادقانه: دلار تک‌مبدأ است (خانوادهٔ tgju) — پرچم فقط لاگ.
+  //  • تتر: موتور چندمنبعی مستقل (Wallex+Ramzinex+Nobitex — fetch موازی):
+  //    میانهٔ مقاوم + حذف outlier + قاعدهٔ اجماع؛ نرخ منتشرشده همیشه
+  //    مقدار primary است (مرجعها فقط اعتبارسنجی میکنند — جایگزینی ممنوع).
+  //  • تتر بدون مرجع معتبر/اجماع → حذف خط (fail-closed) — هرگز از دلار
+  //    کپی یا از مقدار قبلی/حدسی ساخته نمیشود.
   const fetchFn = deps.fetchFn ?? fetch.bind(globalThis);
   const cc = crossCheckConfigFromEnv(env);
   let publishUsd = usdItem.value;
   let publishTether = tether;
   // دلیل ثبتشده در status KV (فقط داخلی — هرگز در پیام عمومی):
-  //  • TETHER_OMITTED_NO_REFERENCE — مرجع Wallex قطع/نامعتبر
-  //  • TETHER_OMITTED_CROSS_CHECK — اختلاف غیرعادی تتر
-  //  • CROSS_CHECK_ADVISORY_TGJU_DOWN — مرجع TGJU قطع (انتشار دلار ادامه)
-  let okReason: string | undefined;
+  //  • TETHER_OMITTED_NO_REFERENCE — هیچ مرجع مستقل معتیری نبود
+  //  • TETHER_OMITTED_CROSS_CHECK — اختلاف غیرعادی از مرجع میانه
+  //  • TETHER_OMITTED_NO_CONSENSUS — مراجع بههم ناسازگار (اعتماد ممنوع)
+  //  • CROSS_CHECK_ADVISORY_TGJU_DOWN — آینهٔ TGJU قطع (انتشار دلار ادامه)
+  const okReasons: string[] = [];
   if (cc.enabled) {
-    const usdRef = await fetchTgjuQuote(
-      TGJU_SYMBOL_MAP.usd ?? "price_dollar_rl",
-      cc.tgjuUrl,
-      fetchFn,
-      now,
-    );
-    const usdOutcome = compareWithReference(
-      publishUsd,
-      usdRef,
-      cc.fxTolerancePct,
-    );
-    if (usdOutcome.verdict === "diverged") {
+    // fetch موازی: آینهٔ TGJU + همهٔ منابع تتر (latency = max، نه جمع)
+    const [usdRef, tetherOutcomes] = await Promise.all([
+      fetchTgjuQuote(
+        TGJU_SYMBOL_MAP.usd ?? "price_dollar_rl",
+        cc.tgjuUrl,
+        fetchFn,
+        now,
+      ),
+      collectTetherReferences(tetherRefConfigFrom(cc), fetchFn, now),
+    ]);
+
+    // ---- دلار: چک آینه (رفتار حفظشده از راندهای قبل) ----
+    const usdDiffPct =
+      usdRef !== null && usdRef.value > 0
+        ? ((publishUsd - usdRef.value) / usdRef.value) * 100
+        : null;
+    if (usdDiffPct !== null && Math.abs(usdDiffPct) > cc.fxTolerancePct) {
+      const rounded = Math.round(usdDiffPct * 10) / 10;
       const result = await record(
         "invalid",
-        `CROSS_CHECK_DIVERGENCE_USD_${usdOutcome.diffPct}PCT`,
+        `CROSS_CHECK_DIVERGENCE_USD_${rounded}PCT`,
       );
       logWarn("job.usd", {
         status: result.status,
         reason: "CROSS_CHECK_DIVERGENCE",
         symbol: "usd",
-        diffPct: usdOutcome.diffPct,
-        reference: usdOutcome.reference,
+        diffPct: rounded,
+        reference: usdRef?.value ?? null,
       });
       return result;
     }
-    if (usdOutcome.verdict === "reference-unavailable") {
-      // مرجع مقایسه قطع است: انتشار دلار ادامه دارد (منبع اصلی معتبر
-      // است) — قطع مرجع فقط در لاگ و status KV ثبت میشود؛ هیچ متن
-      // فنی به کانال نمیرود (دستور مالک ۲۰۲۶-۱۰-۱۱).
-      okReason = "CROSS_CHECK_ADVISORY_TGJU_DOWN";
+    if (usdRef === null) {
+      // آینهٔ مقایسه قطع است: انتشار دلار ادامه دارد (منبع اصلی معتبر
+      // است) — قطع آینه فقط در لاگ و status KV ثبت میشود.
+      okReasons.push("CROSS_CHECK_ADVISORY_TGJU_DOWN");
       logWarn("job.usd", {
         status: "ok",
-        reason: okReason,
+        reason: okReasons[0],
         symbol: "usd",
         note: "reference unavailable — advisory (publish continues)",
       });
+    } else {
+      // پرچم صادقانهٔ مبدأ (مأموریت ۲۹): jahankhahan و TGJU یک خانوادهاند —
+      // «تأیید مستقل» نیست؛ فقط لاگ (رفتار انتشار تغییر نمیکند).
+      logInfo("crosscheck.usd.origin", {
+        symbol: "usd",
+        origin: "tgju-family",
+        independentOrigins: 0,
+        diffPct:
+          usdDiffPct !== null ? Math.round(usdDiffPct * 10) / 10 : null,
+      });
     }
+
+    // ---- تتر: موتور چندمنبعی (مرحلهٔ ۳/۴ مأموریت ۲۹) ----
     if (publishTether !== null) {
-      const tetherRef = await fetchWallexUsdtToman(cc.wallexUrl, fetchFn);
-      const tetherOutcome = compareWithReference(
+      const verdict = evaluateTetherReferences(
         publishTether,
-        tetherRef,
+        tetherOutcomes,
         cc.tetherTolerancePct,
       );
-      if (tetherOutcome.verdict === "diverged") {
-        // حذف خط تتر — نرخ مشکوک هرگز منتشر نمیشود (نه جایگزینی)
+      if (!verdict.publish) {
+        // حذف خط تتر — نرخ مشکوک/بی‌مرجع هرگز منتشر نمیشود (نه جایگزینی)
         publishTether = null;
-        okReason = "TETHER_OMITTED_CROSS_CHECK";
+        okReasons.push(
+          verdict.reason === "DIVERGED"
+            ? "TETHER_OMITTED_CROSS_CHECK"
+            : verdict.reason === "NO_CONSENSUS"
+              ? "TETHER_OMITTED_NO_CONSENSUS"
+              : "TETHER_OMITTED_NO_REFERENCE",
+        );
         logWarn("job.usd", {
           status: "ok",
-          reason: okReason,
+          reason: okReasons[okReasons.length - 1],
           symbol: "usdt",
-          diffPct: tetherOutcome.diffPct,
-          reference: tetherOutcome.reference,
+          reason_code: verdict.reason,
+          reference: verdict.reference,
+          diffPct: verdict.diffPct,
+          validSources: verdict.validSources,
+          independentOrigins: verdict.originCount,
+          outliers: verdict.outliersDropped.join(",") || null,
         });
-      } else if (tetherOutcome.verdict === "reference-unavailable") {
-        // دستور مالک (۲۰۲۶-۱۰-۱۱): تتر بدون مرجع مستقل معتبر منتشر
-        // نمیشود؛ مقدار قبلی هم «نرخ تازه» نمایش داده نمیشود — خط تتر
-        // حذف و وضعیت فقط در لاگ/KV ثبت میشود (بدون متن فنی عمومی).
-        publishTether = null;
-        okReason = "TETHER_OMITTED_NO_REFERENCE";
-        logWarn("job.usd", {
-          status: "ok",
-          reason: okReason,
+      } else {
+        logInfo("job.usd.tether-refs", {
           symbol: "usdt",
-          note: "wallex reference unavailable — tether line withheld",
+          verdict: verdict.reason,
+          reference: verdict.reference,
+          diffPct: verdict.diffPct,
+          validSources: verdict.validSources,
+          independentOrigins: verdict.originCount,
+          singleReference: verdict.singleReference,
+          outliers: verdict.outliersDropped.join(",") || null,
         });
       }
     }
+
+    // سلامت منابع (مأموریت ۲۹ — KV تجمعی با حداقل ۳۰ دقیقه فاصله)
+    await writeRefHealthIfDue(env.STATE, tetherOutcomes, now());
   }
+  const okReason = okReasons.length > 0 ? okReasons.join("+") : undefined;
 
   const finalText = formatPinnedUsdSingleRate(publishUsd, publishTether, false);
   const published = await sendChannelMessage(env, deps, finalText, record);
